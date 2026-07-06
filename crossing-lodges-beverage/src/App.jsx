@@ -265,6 +265,7 @@ const styles = {
 const ADMIN_TABS = [
   { id: 'dashboard', label: 'Dashboard' },
   { id: 'items', label: 'Items' },
+  { id: 'opening', label: 'Opening' },
   { id: 'purchases', label: 'Purchases' },
   { id: 'issues', label: 'Issues' },
   { id: 'count', label: 'Count' },
@@ -546,6 +547,16 @@ export default function App() {
             )}
             {activeTab === 'items' && role === 'admin' && (
               <ItemsTab items={items} metricsByItem={metricsByItem} location={location} onChange={loadAll} />
+            )}
+            {activeTab === 'opening' && role === 'admin' && (
+              <OpeningTab
+                items={items}
+                stockByItem={stockByItem}
+                metricsByItem={metricsByItem}
+                location={location}
+                period={period}
+                onChange={loadAll}
+              />
             )}
             {activeTab === 'purchases' && (
               <PurchasesTab items={items} purchases={purchases} location={location} period={period} onChange={loadAll} />
@@ -886,6 +897,88 @@ function ItemsTab({ items, metricsByItem, location, onChange }) {
         </table>
       </div>
     </>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Opening tab — set/correct opening stock units and opening cost per unit
+// for the current period. Needed because "Start period" only auto-fills
+// these (from the prior period, or 0 for a brand-new item/first month) —
+// there was previously no way to enter or fix the real starting values.
+// ---------------------------------------------------------------------------
+
+function OpeningTab({ items, stockByItem, metricsByItem, location, period, onChange }) {
+  async function saveOpening(item, field, value) {
+    const sp = stockByItem[item.id]
+    if (!sp) return
+    await sb.upsert(
+      'bev_stock_periods',
+      {
+        item_id: item.id,
+        location_id: location,
+        period,
+        opening_units: field === 'opening_units' ? Number(value || 0) : sp.opening_units,
+        opening_cost_per_unit:
+          field === 'opening_cost_per_unit' ? Number(value || 0) : sp.opening_cost_per_unit,
+        closing_count_units: sp.closing_count_units,
+        counted_by: sp.counted_by,
+        count_date: sp.count_date,
+        closed: sp.closed,
+      },
+      'item_id,period'
+    )
+    onChange()
+  }
+
+  return (
+    <div style={styles.card}>
+      <div style={styles.cardTitle}>Opening stock — {period}</div>
+      <div style={{ fontSize: 12, color: colors.muted, marginBottom: 10 }}>
+        These values feed the weighted-average cost and theoretical closing stock for this period.
+        "Start {period}" has to be run first (see the banner above) before an item shows up here as
+        editable.
+      </div>
+      <table style={styles.table}>
+        <thead>
+          <tr>
+            <th style={styles.th}>Item</th>
+            <th style={styles.th}>Opening units</th>
+            <th style={styles.th}>Opening cost/unit</th>
+            <th style={styles.th}>Current W/Avg cost</th>
+          </tr>
+        </thead>
+        <tbody>
+          {items.map((it) => {
+            const sp = stockByItem[it.id]
+            const m = metricsByItem[it.id]
+            return (
+              <tr key={it.id}>
+                <td style={styles.td}>{it.name}</td>
+                <td style={styles.td}>
+                  <input
+                    type="number"
+                    style={styles.smallInput}
+                    defaultValue={sp?.opening_units ?? ''}
+                    disabled={!sp || sp.closed}
+                    onBlur={(e) => saveOpening(it, 'opening_units', e.target.value)}
+                  />
+                </td>
+                <td style={styles.td}>
+                  <input
+                    type="number"
+                    style={styles.smallInput}
+                    defaultValue={sp?.opening_cost_per_unit ?? ''}
+                    disabled={!sp || sp.closed}
+                    onBlur={(e) => saveOpening(it, 'opening_cost_per_unit', e.target.value)}
+                  />
+                </td>
+                <td style={styles.td}>{m ? `R ${fmt(m.weightedAvgCost)}` : '—'}</td>
+              </tr>
+            )
+          })}
+        </tbody>
+      </table>
+    </div>
   )
 }
 
