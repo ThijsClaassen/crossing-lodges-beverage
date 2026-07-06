@@ -19,6 +19,8 @@ create table if not exists bev_items (
   category          text not null default 'Other',   -- Beer, Cider, Cordial, Red Wine, White Wine,
                                                         -- Soft Drinks, Spirits, Water, Consumables, Other
   count_unit        text not null default 'ea',       -- 'ea', 'ltr', 'tot', etc.
+  pricing_tier      text not null default 'Included'  -- 'Included' (all-inclusive) or 'Premium'
+                      check (pricing_tier in ('Included', 'Premium')),
   storeroom         text,                              -- e.g. 'A', 'B'
   shelf             text,                              -- e.g. 'Top', 'Middle', 'Bottom'
   shelf_position    text,                              -- e.g. 'Front', 'Back'
@@ -90,6 +92,17 @@ create table if not exists bev_issues (
 create index if not exists idx_bev_issues_lookup on bev_issues(location_id, period, item_id);
 
 -- ---------------------------------------------------------------------------
+-- bev_access — Admin/Staff login, matching the ops app's shared-password
+-- pattern (own table, not shared with the ops app's app_access).
+-- ---------------------------------------------------------------------------
+create table if not exists bev_access (
+  id          uuid primary key default gen_random_uuid(),
+  role        text not null unique check (role in ('admin', 'staff')),
+  password    text not null,
+  created_at  timestamptz not null default now()
+);
+
+-- ---------------------------------------------------------------------------
 -- Row Level Security — matching the ops app's current approach (open allow_all
 -- policies via the anon key). Same caveat applies: no per-user audit trail.
 -- ---------------------------------------------------------------------------
@@ -97,6 +110,7 @@ alter table bev_items          enable row level security;
 alter table bev_stock_periods  enable row level security;
 alter table bev_purchases      enable row level security;
 alter table bev_issues         enable row level security;
+alter table bev_access         enable row level security;
 
 create policy allow_all_bev_items on bev_items
   for all using (true) with check (true);
@@ -106,3 +120,29 @@ create policy allow_all_bev_purchases on bev_purchases
   for all using (true) with check (true);
 create policy allow_all_bev_issues on bev_issues
   for all using (true) with check (true);
+-- bev_access only ever needs to be READ by the app (to check a password);
+-- it's never written to from the client. Change passwords via the Table
+-- Editor, not through the app.
+create policy allow_read_bev_access on bev_access
+  for select using (true);
+
+-- ---------------------------------------------------------------------------
+-- Baseline table grants. RLS policies above control row-level access, but
+-- Postgres separately requires grants for the anon/authenticated roles to
+-- touch these tables at all — without this block you'll get "permission
+-- denied for table ..." (42501) even with the allow_all policies in place.
+-- ---------------------------------------------------------------------------
+grant usage on schema public to anon, authenticated;
+
+grant select, insert, update, delete on public.bev_items          to anon, authenticated;
+grant select, insert, update, delete on public.bev_stock_periods  to anon, authenticated;
+grant select, insert, update, delete on public.bev_purchases      to anon, authenticated;
+grant select, insert, update, delete on public.bev_issues         to anon, authenticated;
+grant select on public.bev_access to anon, authenticated;
+
+-- Default Admin/Staff passwords — CHANGE THESE immediately via the Table
+-- Editor (bev_access table) after setup.
+insert into bev_access (role, password) values
+  ('admin', 'ChangeMe-Admin1'),
+  ('staff', 'ChangeMe-Staff1')
+on conflict (role) do nothing;
