@@ -1,9 +1,0 @@
-{
-  "name": "Crossing Lodges Beverage Stock",
-  "short_name": "Bev Stock",
-  "start_url": "/",
-  "display": "standalone",
-  "background_color": "#ffffff",
-  "theme_color": "#12351f",
-  "icons": []
-}
