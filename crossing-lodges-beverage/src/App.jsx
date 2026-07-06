@@ -445,6 +445,48 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [location, period])
 
+  // ---------------------------------------------------------------------------
+  // Local (optimistic) state updates. Editing a single field used to call
+  // loadAll(), which re-fetches everything and briefly unmounts the whole
+  // screen behind a "Loading…" placeholder — painful when entering counts for
+  // 100+ items in a row. These instead patch just the affected row(s) in
+  // state directly from what the server handed back, so the screen never
+  // blanks out and there's no extra round trip. Same "write back
+  // optimistically" approach the ops app already uses.
+  // ---------------------------------------------------------------------------
+  function upsertLocalStockPeriods(rows) {
+    const list = Array.isArray(rows) ? rows : [rows]
+    setStockPeriods((prev) => {
+      const map = new Map(prev.map((sp) => [`${sp.item_id}|${sp.period}`, sp]))
+      for (const row of list) map.set(`${row.item_id}|${row.period}`, row)
+      return Array.from(map.values())
+    })
+  }
+
+  function addLocalItem(row) {
+    setItems((prev) => [...prev, row])
+  }
+  function updateLocalItem(row) {
+    setItems((prev) => prev.map((it) => (it.id === row.id ? row : it)))
+  }
+  function removeLocalItem(id) {
+    setItems((prev) => prev.filter((it) => it.id !== id))
+  }
+
+  function addLocalPurchase(row) {
+    setPurchases((prev) => [...prev, row])
+  }
+  function removeLocalPurchase(id) {
+    setPurchases((prev) => prev.filter((p) => p.id !== id))
+  }
+
+  function addLocalIssue(row) {
+    setIssues((prev) => [...prev, row])
+  }
+  function removeLocalIssue(id) {
+    setIssues((prev) => prev.filter((i) => i.id !== id))
+  }
+
   const stockByItem = useMemo(() => {
     const map = {}
     for (const sp of stockPeriods) map[sp.item_id] = sp
@@ -513,16 +555,16 @@ export default function App() {
         }
       })
     if (rows.length) {
-      await sb.upsert('bev_stock_periods', rows, 'item_id,period')
-      await loadAll()
+      const saved = await sb.upsert('bev_stock_periods', rows, 'item_id,period')
+      upsertLocalStockPeriods(saved || rows)
     }
   }
 
   async function closePeriod() {
     const rows = stockPeriods.map((sp) => ({ ...sp, closed: true }))
     if (rows.length) {
-      await sb.upsert('bev_stock_periods', rows, 'item_id,period')
-      await loadAll()
+      const saved = await sb.upsert('bev_stock_periods', rows, 'item_id,period')
+      upsertLocalStockPeriods(saved || rows)
     }
   }
 
@@ -604,7 +646,14 @@ export default function App() {
               <DashboardTab items={items} metricsByItem={metricsByItem} period={period} />
             )}
             {activeTab === 'items' && role === 'admin' && (
-              <ItemsTab items={items} metricsByItem={metricsByItem} location={location} onChange={loadAll} />
+              <ItemsTab
+                items={items}
+                metricsByItem={metricsByItem}
+                location={location}
+                onAdd={addLocalItem}
+                onUpdate={updateLocalItem}
+                onRemove={removeLocalItem}
+              />
             )}
             {activeTab === 'opening' && role === 'admin' && (
               <OpeningTab
@@ -613,14 +662,28 @@ export default function App() {
                 metricsByItem={metricsByItem}
                 location={location}
                 period={period}
-                onChange={loadAll}
+                onSave={upsertLocalStockPeriods}
               />
             )}
             {activeTab === 'purchases' && (
-              <PurchasesTab items={items} purchases={purchases} location={location} period={period} onChange={loadAll} />
+              <PurchasesTab
+                items={items}
+                purchases={purchases}
+                location={location}
+                period={period}
+                onAdd={addLocalPurchase}
+                onRemove={removeLocalPurchase}
+              />
             )}
             {activeTab === 'issues' && (
-              <IssuesTab items={items} issues={issues} location={location} period={period} onChange={loadAll} />
+              <IssuesTab
+                items={items}
+                issues={issues}
+                location={location}
+                period={period}
+                onAdd={addLocalIssue}
+                onRemove={removeLocalIssue}
+              />
             )}
             {activeTab === 'count' && (
               <CountTab
@@ -629,7 +692,7 @@ export default function App() {
                 metricsByItem={metricsByItem}
                 location={location}
                 period={period}
-                onChange={loadAll}
+                onSave={upsertLocalStockPeriods}
               />
             )}
             {activeTab === 'variance' && role === 'admin' && (
@@ -807,7 +870,7 @@ function DashboardTab({ items, metricsByItem, period }) {
 // Items tab — manage the beverage master list for the selected lodge
 // ---------------------------------------------------------------------------
 
-function ItemsTab({ items, metricsByItem, location, onChange }) {
+function ItemsTab({ items, metricsByItem, location, onAdd, onUpdate, onRemove }) {
   const [form, setForm] = useState({
     name: '',
     category: 'Beer',
@@ -821,20 +884,20 @@ function ItemsTab({ items, metricsByItem, location, onChange }) {
   async function addItem() {
     if (!form.name.trim()) return
     setSaving(true)
-    await sb.insert('bev_items', { ...form, location_id: location })
+    const [row] = await sb.insert('bev_items', { ...form, location_id: location })
     setForm({ name: '', category: 'Beer', count_unit: 'ea', pricing_tier: 'Included', min_units: 24, max_units: 72 })
     setSaving(false)
-    onChange()
+    onAdd(row)
   }
 
   async function updateItem(id, patch) {
-    await sb.update('bev_items', { id }, patch)
-    onChange()
+    const [row] = await sb.update('bev_items', { id }, patch)
+    onUpdate(row)
   }
 
   async function deactivate(id) {
     await sb.update('bev_items', { id }, { active: false })
-    onChange()
+    onRemove(id)
   }
 
   return (
@@ -965,11 +1028,11 @@ function ItemsTab({ items, metricsByItem, location, onChange }) {
 // there was previously no way to enter or fix the real starting values.
 // ---------------------------------------------------------------------------
 
-function OpeningTab({ items, stockByItem, metricsByItem, location, period, onChange }) {
+function OpeningTab({ items, stockByItem, metricsByItem, location, period, onSave }) {
   async function saveOpening(item, field, value) {
     const sp = stockByItem[item.id]
     if (!sp) return
-    await sb.upsert(
+    const saved = await sb.upsert(
       'bev_stock_periods',
       {
         item_id: item.id,
@@ -985,7 +1048,7 @@ function OpeningTab({ items, stockByItem, metricsByItem, location, period, onCha
       },
       'item_id,period'
     )
-    onChange()
+    onSave(saved?.[0] || { ...sp, [field]: Number(value || 0) })
   }
 
   return (
@@ -1044,7 +1107,7 @@ function OpeningTab({ items, stockByItem, metricsByItem, location, period, onCha
 // Purchases tab
 // ---------------------------------------------------------------------------
 
-function PurchasesTab({ items, purchases, location, period, onChange }) {
+function PurchasesTab({ items, purchases, location, period, onAdd, onRemove }) {
   const [form, setForm] = useState({
     item_id: items[0]?.id || '',
     date: new Date().toISOString().slice(0, 10),
@@ -1057,7 +1120,7 @@ function PurchasesTab({ items, purchases, location, period, onChange }) {
   async function addPurchase() {
     if (!form.item_id || !form.units) return
     setSaving(true)
-    await sb.insert('bev_purchases', {
+    const [row] = await sb.insert('bev_purchases', {
       item_id: form.item_id,
       location_id: location,
       period: toPeriod(form.date),
@@ -1068,12 +1131,12 @@ function PurchasesTab({ items, purchases, location, period, onChange }) {
     })
     setForm({ ...form, units: '', total_cost_excl_vat: '', supplier: '' })
     setSaving(false)
-    onChange()
+    onAdd(row)
   }
 
   async function removePurchase(id) {
     await sb.remove('bev_purchases', { id })
-    onChange()
+    onRemove(id)
   }
 
   const itemName = (id) => items.find((i) => i.id === id)?.name || '—'
@@ -1171,7 +1234,7 @@ function PurchasesTab({ items, purchases, location, period, onChange }) {
 // Issues tab — v1: simple daily total per item (no cost-centre breakdown yet)
 // ---------------------------------------------------------------------------
 
-function IssuesTab({ items, issues, location, period, onChange }) {
+function IssuesTab({ items, issues, location, period, onAdd, onRemove }) {
   const [form, setForm] = useState({
     item_id: items[0]?.id || '',
     date: new Date().toISOString().slice(0, 10),
@@ -1183,7 +1246,7 @@ function IssuesTab({ items, issues, location, period, onChange }) {
   async function addIssue() {
     if (!form.item_id || !form.qty) return
     setSaving(true)
-    await sb.insert('bev_issues', {
+    const [row] = await sb.insert('bev_issues', {
       item_id: form.item_id,
       location_id: location,
       period: toPeriod(form.date),
@@ -1193,12 +1256,12 @@ function IssuesTab({ items, issues, location, period, onChange }) {
     })
     setForm({ ...form, qty: '', note: '' })
     setSaving(false)
-    onChange()
+    onAdd(row)
   }
 
   async function removeIssue(id) {
     await sb.remove('bev_issues', { id })
-    onChange()
+    onRemove(id)
   }
 
   const itemName = (id) => items.find((i) => i.id === id)?.name || '—'
@@ -1284,26 +1347,23 @@ function IssuesTab({ items, issues, location, period, onChange }) {
 // Count tab — enter the physical closing stock count
 // ---------------------------------------------------------------------------
 
-function CountTab({ items, stockByItem, metricsByItem, location, period, onChange }) {
+function CountTab({ items, stockByItem, metricsByItem, location, period, onSave }) {
   const [countedBy, setCountedBy] = useState('')
 
   async function saveCount(item, value) {
     const sp = stockByItem[item.id]
-    await sb.upsert(
-      'bev_stock_periods',
-      {
-        item_id: item.id,
-        location_id: location,
-        period,
-        opening_units: sp?.opening_units ?? 0,
-        opening_cost_per_unit: sp?.opening_cost_per_unit ?? 0,
-        closing_count_units: value === '' ? null : Number(value),
-        counted_by: countedBy || sp?.counted_by || null,
-        count_date: new Date().toISOString().slice(0, 10),
-      },
-      'item_id,period'
-    )
-    onChange()
+    const payload = {
+      item_id: item.id,
+      location_id: location,
+      period,
+      opening_units: sp?.opening_units ?? 0,
+      opening_cost_per_unit: sp?.opening_cost_per_unit ?? 0,
+      closing_count_units: value === '' ? null : Number(value),
+      counted_by: countedBy || sp?.counted_by || null,
+      count_date: new Date().toISOString().slice(0, 10),
+    }
+    const saved = await sb.upsert('bev_stock_periods', payload, 'item_id,period')
+    onSave(saved?.[0] || payload)
   }
 
   return (
