@@ -62,6 +62,36 @@ function computeMetrics(item, stockPeriod, itemPurchases, itemIssues) {
   }
 }
 
+// Rolls per-item metrics up into totals, split by pricing tier (Included vs
+// Premium), for the Dashboard. "Actual" value uses the physical count where
+// one exists this period, and falls back to the theoretical estimate for
+// items that haven't been counted yet — so the total is always complete.
+function aggregateValues(items, metricsByItem) {
+  const blank = () => ({ theoreticalValue: 0, actualValue: 0, varianceValue: 0, issuedValue: 0 })
+  const totals = { ...blank(), byTier: { Included: blank(), Premium: blank() } }
+
+  for (const it of items) {
+    const m = metricsByItem[it.id]
+    if (!m) continue
+    const tier = it.pricing_tier === 'Premium' ? 'Premium' : 'Included'
+    const theoreticalValue = m.theoreticalClosing * m.weightedAvgCost
+    const actualValue = (m.hasCount ? m.closingCount : m.theoreticalClosing) * m.weightedAvgCost
+    const varianceValue = m.hasCount ? m.varianceValue : 0
+    const issuedValue = m.issuedTotal * m.weightedAvgCost
+
+    totals.theoreticalValue += theoreticalValue
+    totals.actualValue += actualValue
+    totals.varianceValue += varianceValue
+    totals.issuedValue += issuedValue
+
+    totals.byTier[tier].theoreticalValue += theoreticalValue
+    totals.byTier[tier].actualValue += actualValue
+    totals.byTier[tier].varianceValue += varianceValue
+    totals.byTier[tier].issuedValue += issuedValue
+  }
+  return totals
+}
+
 // ---------------------------------------------------------------------------
 // Shared styles (inline CSS-in-JS, mirrors the ops app's approach)
 // ---------------------------------------------------------------------------
@@ -232,7 +262,8 @@ const styles = {
   }),
 }
 
-const TABS = [
+const ADMIN_TABS = [
+  { id: 'dashboard', label: 'Dashboard' },
   { id: 'items', label: 'Items' },
   { id: 'purchases', label: 'Purchases' },
   { id: 'issues', label: 'Issues' },
@@ -241,14 +272,97 @@ const TABS = [
   { id: 'orders', label: 'Orders' },
 ]
 
+const STAFF_TABS = [
+  { id: 'purchases', label: 'Purchases' },
+  { id: 'issues', label: 'Issues' },
+  { id: 'count', label: 'Count' },
+  { id: 'orders', label: 'Orders' },
+]
+
 // ---------------------------------------------------------------------------
 // App
 // ---------------------------------------------------------------------------
 
+function useAuth() {
+  const [role, setRole] = useState(() => {
+    try {
+      return localStorage.getItem('bev_role') || null
+    } catch {
+      return null
+    }
+  })
+
+  function login(r) {
+    try {
+      localStorage.setItem('bev_role', r)
+    } catch {
+      /* ignore storage errors */
+    }
+    setRole(r)
+  }
+
+  function logout() {
+    try {
+      localStorage.removeItem('bev_role')
+    } catch {
+      /* ignore storage errors */
+    }
+    setRole(null)
+  }
+
+  return { role, login, logout }
+}
+
+function LoginScreen({ onLogin }) {
+  const [password, setPassword] = useState('')
+  const [error, setError] = useState('')
+  const [checking, setChecking] = useState(false)
+
+  async function submit(e) {
+    e.preventDefault()
+    if (!password) return
+    setChecking(true)
+    setError('')
+    try {
+      const rows = await sb.select('bev_access', { password })
+      if (rows && rows.length) {
+        onLogin(rows[0].role)
+      } else {
+        setError('Incorrect password.')
+      }
+    } catch (err) {
+      setError(`Could not reach the database: ${err.message}`)
+    } finally {
+      setChecking(false)
+    }
+  }
+
+  return (
+    <div style={{ ...styles.app, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+      <form onSubmit={submit} style={{ ...styles.card, width: 280 }}>
+        <div style={styles.cardTitle}>Crossing Lodges — Beverage Stock</div>
+        <label style={styles.label}>Password</label>
+        <input
+          type="password"
+          autoFocus
+          style={styles.input}
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+        />
+        {error && <div style={{ color: colors.danger, fontSize: 12, marginTop: 8 }}>{error}</div>}
+        <button type="submit" style={{ ...styles.button, width: '100%', marginTop: 12 }} disabled={checking}>
+          {checking ? 'Checking…' : 'Log in'}
+        </button>
+      </form>
+    </div>
+  )
+}
+
 export default function App() {
+  const { role, login, logout } = useAuth()
   const [location, setLocation] = useState('ZC')
   const [period, setPeriod] = useState(currentPeriod())
-  const [tab, setTab] = useState('variance')
+  const [tab, setTab] = useState('dashboard')
   const [loading, setLoading] = useState(true)
   const [items, setItems] = useState([])
   const [stockPeriods, setStockPeriods] = useState([])
@@ -365,10 +479,25 @@ export default function App() {
 
   const allClosed = stockPeriods.length > 0 && stockPeriods.every((sp) => sp.closed)
 
+  if (!role) {
+    return <LoginScreen onLogin={login} />
+  }
+
+  const TABS = role === 'admin' ? ADMIN_TABS : STAFF_TABS
+  const activeTab = TABS.some((t) => t.id === tab) ? tab : TABS[0].id
+
   return (
     <div style={styles.app}>
       <div style={styles.header}>
-        <div style={styles.headerTitle}>Crossing Lodges — Beverage Stock</div>
+        <div style={{ ...styles.row, justifyContent: 'space-between' }}>
+          <div style={styles.headerTitle}>Crossing Lodges — Beverage Stock</div>
+          <div style={styles.row}>
+            <span style={styles.badge('neutral')}>{role === 'admin' ? 'Admin' : 'Staff'}</span>
+            <button style={{ ...styles.pill(false), padding: '4px 10px' }} onClick={logout}>
+              Log out
+            </button>
+          </div>
+        </div>
         <div style={styles.row}>
           <div style={styles.pillGroup}>
             {LOCATIONS.map((l) => (
@@ -412,14 +541,19 @@ export default function App() {
           <div style={{ padding: 20, color: colors.muted }}>Loading…</div>
         ) : (
           <>
-            {tab === 'items' && <ItemsTab items={items} location={location} onChange={loadAll} />}
-            {tab === 'purchases' && (
+            {activeTab === 'dashboard' && role === 'admin' && (
+              <DashboardTab items={items} metricsByItem={metricsByItem} period={period} />
+            )}
+            {activeTab === 'items' && role === 'admin' && (
+              <ItemsTab items={items} metricsByItem={metricsByItem} location={location} onChange={loadAll} />
+            )}
+            {activeTab === 'purchases' && (
               <PurchasesTab items={items} purchases={purchases} location={location} period={period} onChange={loadAll} />
             )}
-            {tab === 'issues' && (
+            {activeTab === 'issues' && (
               <IssuesTab items={items} issues={issues} location={location} period={period} onChange={loadAll} />
             )}
-            {tab === 'count' && (
+            {activeTab === 'count' && (
               <CountTab
                 items={items}
                 stockByItem={stockByItem}
@@ -429,7 +563,7 @@ export default function App() {
                 onChange={loadAll}
               />
             )}
-            {tab === 'variance' && (
+            {activeTab === 'variance' && role === 'admin' && (
               <VarianceTab
                 items={items}
                 metricsByItem={metricsByItem}
@@ -437,14 +571,14 @@ export default function App() {
                 onClosePeriod={closePeriod}
               />
             )}
-            {tab === 'orders' && <OrdersTab items={items} metricsByItem={metricsByItem} />}
+            {activeTab === 'orders' && <OrdersTab items={items} metricsByItem={metricsByItem} />}
           </>
         )}
       </div>
 
       <div style={styles.nav}>
         {TABS.map((t) => (
-          <button key={t.id} style={styles.navItem(tab === t.id)} onClick={() => setTab(t.id)}>
+          <button key={t.id} style={styles.navItem(activeTab === t.id)} onClick={() => setTab(t.id)}>
             {t.label}
           </button>
         ))}
@@ -454,14 +588,162 @@ export default function App() {
 }
 
 // ---------------------------------------------------------------------------
+// Dashboard tab — Admin only: stock value, Included vs Premium split, and
+// which items are moving fastest / not selling at all this period.
+// ---------------------------------------------------------------------------
+
+function DashboardTab({ items, metricsByItem, period }) {
+  const totals = useMemo(() => aggregateValues(items, metricsByItem), [items, metricsByItem])
+
+  const ranked = useMemo(
+    () =>
+      items
+        .map((it) => ({ item: it, m: metricsByItem[it.id] }))
+        .filter((x) => x.m)
+        .sort((a, b) => b.m.issuedTotal - a.m.issuedTotal),
+    [items, metricsByItem]
+  )
+  const fastest = ranked.filter((x) => x.m.issuedTotal > 0).slice(0, 10)
+  const notMoving = ranked.filter((x) => x.m.issuedTotal === 0)
+
+  const tierRow = (label, key) => (
+    <tr>
+      <td style={styles.td}>{label}</td>
+      <td style={styles.td}>R {fmt(totals.byTier[key].theoreticalValue)}</td>
+      <td style={styles.td}>R {fmt(totals.byTier[key].actualValue)}</td>
+      <td style={styles.td}>
+        <span style={styles.badge(totals.byTier[key].varianceValue < 0 ? 'bad' : 'good')}>
+          R {fmt(totals.byTier[key].varianceValue)}
+        </span>
+      </td>
+      <td style={styles.td}>R {fmt(totals.byTier[key].issuedValue)}</td>
+    </tr>
+  )
+
+  return (
+    <>
+      <div style={styles.card}>
+        <div style={styles.cardTitle}>Stock value — {period}</div>
+        <table style={styles.table}>
+          <thead>
+            <tr>
+              <th style={styles.th}></th>
+              <th style={styles.th}>Theoretical value</th>
+              <th style={styles.th}>Actual (counted) value</th>
+              <th style={styles.th}>Value variance</th>
+              <th style={styles.th}>Used this month</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td style={styles.td}>
+                <strong>Total</strong>
+              </td>
+              <td style={styles.td}>
+                <strong>R {fmt(totals.theoreticalValue)}</strong>
+              </td>
+              <td style={styles.td}>
+                <strong>R {fmt(totals.actualValue)}</strong>
+              </td>
+              <td style={styles.td}>
+                <span style={styles.badge(totals.varianceValue < 0 ? 'bad' : 'good')}>
+                  R {fmt(totals.varianceValue)}
+                </span>
+              </td>
+              <td style={styles.td}>
+                <strong>R {fmt(totals.issuedValue)}</strong>
+              </td>
+            </tr>
+            {tierRow('Included (all-inclusive)', 'Included')}
+            {tierRow('Premium', 'Premium')}
+          </tbody>
+        </table>
+        <div style={{ fontSize: 12, color: colors.muted, marginTop: 8 }}>
+          "Value variance" only reflects items that have had a physical count this period — it's the
+          Rand value gap between what the books say should be on the shelf and what was actually
+          counted (negative means stock is missing). Items not yet counted fall back to the
+          theoretical estimate in both columns, so the totals stay complete.
+        </div>
+      </div>
+
+      <div style={styles.card}>
+        <div style={styles.cardTitle}>Fastest moving this period</div>
+        <table style={styles.table}>
+          <thead>
+            <tr>
+              <th style={styles.th}>Item</th>
+              <th style={styles.th}>Category</th>
+              <th style={styles.th}>Tier</th>
+              <th style={styles.th}>Qty issued</th>
+              <th style={styles.th}>Value issued</th>
+            </tr>
+          </thead>
+          <tbody>
+            {fastest.map(({ item, m }) => (
+              <tr key={item.id}>
+                <td style={styles.td}>{item.name}</td>
+                <td style={styles.td}>{item.category}</td>
+                <td style={styles.td}>{item.pricing_tier || 'Included'}</td>
+                <td style={styles.td}>{fmt(m.issuedTotal, 0)}</td>
+                <td style={styles.td}>R {fmt(m.issuedTotal * m.weightedAvgCost)}</td>
+              </tr>
+            ))}
+            {fastest.length === 0 && (
+              <tr>
+                <td style={styles.td} colSpan={5}>
+                  No issues logged this period yet.
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+
+      <div style={styles.card}>
+        <div style={styles.cardTitle}>Not moving this period ({notMoving.length})</div>
+        <div style={{ fontSize: 12, color: colors.muted, marginBottom: 8 }}>
+          Zero issues logged so far this period — candidates to reconsider on the beverage menu.
+        </div>
+        <table style={styles.table}>
+          <thead>
+            <tr>
+              <th style={styles.th}>Item</th>
+              <th style={styles.th}>Category</th>
+              <th style={styles.th}>Tier</th>
+            </tr>
+          </thead>
+          <tbody>
+            {notMoving.map(({ item }) => (
+              <tr key={item.id}>
+                <td style={styles.td}>{item.name}</td>
+                <td style={styles.td}>{item.category}</td>
+                <td style={styles.td}>{item.pricing_tier || 'Included'}</td>
+              </tr>
+            ))}
+            {notMoving.length === 0 && (
+              <tr>
+                <td style={styles.td} colSpan={3}>
+                  Everything moved at least once this period.
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // Items tab — manage the beverage master list for the selected lodge
 // ---------------------------------------------------------------------------
 
-function ItemsTab({ items, location, onChange }) {
+function ItemsTab({ items, metricsByItem, location, onChange }) {
   const [form, setForm] = useState({
     name: '',
     category: 'Beer',
     count_unit: 'ea',
+    pricing_tier: 'Included',
     min_units: 24,
     max_units: 72,
   })
@@ -471,7 +753,7 @@ function ItemsTab({ items, location, onChange }) {
     if (!form.name.trim()) return
     setSaving(true)
     await sb.insert('bev_items', { ...form, location_id: location })
-    setForm({ name: '', category: 'Beer', count_unit: 'ea', min_units: 24, max_units: 72 })
+    setForm({ name: '', category: 'Beer', count_unit: 'ea', pricing_tier: 'Included', min_units: 24, max_units: 72 })
     setSaving(false)
     onChange()
   }
@@ -504,6 +786,17 @@ function ItemsTab({ items, location, onChange }) {
             <input style={styles.input} value={form.count_unit} onChange={(e) => setForm({ ...form, count_unit: e.target.value })} />
           </div>
           <div>
+            <label style={styles.label}>Pricing tier</label>
+            <select
+              style={styles.input}
+              value={form.pricing_tier}
+              onChange={(e) => setForm({ ...form, pricing_tier: e.target.value })}
+            >
+              <option value="Included">Included (all-inclusive)</option>
+              <option value="Premium">Premium</option>
+            </select>
+          </div>
+          <div>
             <label style={styles.label}>Min units</label>
             <input
               type="number"
@@ -534,41 +827,61 @@ function ItemsTab({ items, location, onChange }) {
             <tr>
               <th style={styles.th}>Name</th>
               <th style={styles.th}>Category</th>
+              <th style={styles.th}>Tier</th>
               <th style={styles.th}>Unit</th>
               <th style={styles.th}>Min</th>
               <th style={styles.th}>Max</th>
+              <th style={styles.th}>W/Avg cost</th>
+              <th style={styles.th}>Stock value</th>
               <th style={styles.th}></th>
             </tr>
           </thead>
           <tbody>
-            {items.map((it) => (
-              <tr key={it.id}>
-                <td style={styles.td}>{it.name}</td>
-                <td style={styles.td}>{it.category}</td>
-                <td style={styles.td}>{it.count_unit}</td>
-                <td style={styles.td}>
-                  <input
-                    type="number"
-                    style={styles.smallInput}
-                    defaultValue={it.min_units}
-                    onBlur={(e) => updateItem(it.id, { min_units: Number(e.target.value) })}
-                  />
-                </td>
-                <td style={styles.td}>
-                  <input
-                    type="number"
-                    style={styles.smallInput}
-                    defaultValue={it.max_units}
-                    onBlur={(e) => updateItem(it.id, { max_units: Number(e.target.value) })}
-                  />
-                </td>
-                <td style={styles.td}>
-                  <button style={styles.buttonDanger} onClick={() => deactivate(it.id)}>
-                    Remove
-                  </button>
-                </td>
-              </tr>
-            ))}
+            {items.map((it) => {
+              const m = metricsByItem?.[it.id]
+              const currentUnits = m ? (m.hasCount ? m.closingCount : m.theoreticalClosing) : null
+              const currentValue = m ? currentUnits * m.weightedAvgCost : null
+              return (
+                <tr key={it.id}>
+                  <td style={styles.td}>{it.name}</td>
+                  <td style={styles.td}>{it.category}</td>
+                  <td style={styles.td}>
+                    <select
+                      style={styles.smallInput}
+                      defaultValue={it.pricing_tier || 'Included'}
+                      onChange={(e) => updateItem(it.id, { pricing_tier: e.target.value })}
+                    >
+                      <option value="Included">Included</option>
+                      <option value="Premium">Premium</option>
+                    </select>
+                  </td>
+                  <td style={styles.td}>{it.count_unit}</td>
+                  <td style={styles.td}>
+                    <input
+                      type="number"
+                      style={styles.smallInput}
+                      defaultValue={it.min_units}
+                      onBlur={(e) => updateItem(it.id, { min_units: Number(e.target.value) })}
+                    />
+                  </td>
+                  <td style={styles.td}>
+                    <input
+                      type="number"
+                      style={styles.smallInput}
+                      defaultValue={it.max_units}
+                      onBlur={(e) => updateItem(it.id, { max_units: Number(e.target.value) })}
+                    />
+                  </td>
+                  <td style={styles.td}>{m ? `R ${fmt(m.weightedAvgCost)}` : '—'}</td>
+                  <td style={styles.td}>{m ? `R ${fmt(currentValue)}` : '—'}</td>
+                  <td style={styles.td}>
+                    <button style={styles.buttonDanger} onClick={() => deactivate(it.id)}>
+                      Remove
+                    </button>
+                  </td>
+                </tr>
+              )
+            })}
           </tbody>
         </table>
       </div>
