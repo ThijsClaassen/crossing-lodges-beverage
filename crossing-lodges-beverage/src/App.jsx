@@ -96,64 +96,92 @@ function aggregateValues(items, metricsByItem) {
 // Shared styles (inline CSS-in-JS, mirrors the ops app's approach)
 // ---------------------------------------------------------------------------
 
+// Crossing Lodges shared brand palette (same tokens as the ops app) -----------
 const colors = {
-  bg: '#f4f6f4',
-  card: '#ffffff',
-  border: '#e1e5e1',
-  primary: '#12351f',
-  accent: '#2f6b3f',
-  danger: '#b3312c',
-  warn: '#a8710a',
-  text: '#1c241d',
-  muted: '#6b756c',
+  bg: '#1E1D2B',
+  panel: '#28273A',
+  border: '#3A3850',
+  cream: '#F0EDE6',
+  muted: '#8A8899',
+  navy: '#3C3B5A',
+  navyLt: '#4E4D72',
+  gold: '#B8935A',
+  goldLt: '#D4AF7A',
+  ok: '#5A9B72',
+  danger: '#C05858',
+  loc: { ZC: '#B8935A', EC: '#5B8CC4', SC: '#7BAE7F' },
+}
+
+const fonts = {
+  body: "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
+  heading: "'Cormorant Garamond', serif",
+  mono: "'Space Mono', monospace",
 }
 
 const styles = {
   app: {
-    fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+    fontFamily: fonts.body,
     background: colors.bg,
     minHeight: '100vh',
-    color: colors.text,
+    color: colors.cream,
     paddingBottom: 72,
   },
   header: {
-    background: colors.primary,
-    color: '#fff',
+    background: colors.panel,
+    borderBottom: `1px solid ${colors.border}`,
+    color: colors.cream,
     padding: '14px 16px 10px',
     position: 'sticky',
     top: 0,
     zIndex: 10,
   },
-  headerTitle: { fontSize: 17, fontWeight: 700, marginBottom: 10 },
+  headerTitle: {
+    fontFamily: fonts.heading,
+    fontSize: 22,
+    fontWeight: 600,
+    marginBottom: 10,
+    color: colors.cream,
+    display: 'flex',
+    alignItems: 'center',
+    gap: 10,
+  },
+  logo: { height: 28, width: 'auto', display: 'block' },
   row: { display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' },
   pillGroup: { display: 'flex', gap: 6, flexWrap: 'wrap' },
-  pill: (active) => ({
+  pill: (active, locId) => ({
     padding: '6px 12px',
     borderRadius: 999,
     fontSize: 13,
     fontWeight: 600,
-    border: '1px solid rgba(255,255,255,0.35)',
-    background: active ? '#fff' : 'transparent',
-    color: active ? colors.primary : '#fff',
+    border: `1px solid ${locId ? colors.loc[locId] : colors.border}`,
+    background: active ? (locId ? colors.loc[locId] : colors.navy) : 'transparent',
+    color: active ? colors.bg : locId ? colors.loc[locId] : colors.cream,
     cursor: 'pointer',
   }),
   monthInput: {
     padding: '6px 10px',
     borderRadius: 8,
-    border: '1px solid rgba(255,255,255,0.35)',
-    background: 'transparent',
-    color: '#fff',
+    border: `1px solid ${colors.border}`,
+    background: colors.bg,
+    color: colors.cream,
+    fontFamily: fonts.mono,
     fontSize: 13,
   },
   content: { padding: 14, maxWidth: 900, margin: '0 auto' },
   card: {
-    background: colors.card,
+    background: colors.panel,
     border: `1px solid ${colors.border}`,
     borderRadius: 12,
     padding: 14,
     marginBottom: 12,
   },
-  cardTitle: { fontSize: 14, fontWeight: 700, marginBottom: 10, color: colors.primary },
+  cardTitle: {
+    fontFamily: fonts.heading,
+    fontSize: 19,
+    fontWeight: 600,
+    marginBottom: 10,
+    color: colors.goldLt,
+  },
   table: { width: '100%', borderCollapse: 'collapse', fontSize: 13 },
   th: {
     textAlign: 'left',
@@ -164,11 +192,20 @@ const styles = {
     whiteSpace: 'nowrap',
   },
   td: { padding: '6px 8px', borderBottom: `1px solid ${colors.border}`, whiteSpace: 'nowrap' },
+  tdNum: {
+    padding: '6px 8px',
+    borderBottom: `1px solid ${colors.border}`,
+    whiteSpace: 'nowrap',
+    fontFamily: fonts.mono,
+  },
+  num: { fontFamily: fonts.mono },
   input: {
     width: '100%',
     padding: '7px 9px',
     borderRadius: 8,
     border: `1px solid ${colors.border}`,
+    background: colors.bg,
+    color: colors.cream,
     fontSize: 13,
     boxSizing: 'border-box',
   },
@@ -177,14 +214,17 @@ const styles = {
     padding: '5px 7px',
     borderRadius: 6,
     border: `1px solid ${colors.border}`,
+    background: colors.bg,
+    color: colors.cream,
+    fontFamily: fonts.mono,
     fontSize: 13,
   },
   button: {
     padding: '9px 14px',
     borderRadius: 8,
     border: 'none',
-    background: colors.accent,
-    color: '#fff',
+    background: colors.navy,
+    color: colors.cream,
     fontWeight: 600,
     fontSize: 13,
     cursor: 'pointer',
@@ -192,9 +232,9 @@ const styles = {
   buttonGhost: {
     padding: '9px 14px',
     borderRadius: 8,
-    border: `1px solid ${colors.accent}`,
+    border: `1px solid ${colors.gold}`,
     background: 'transparent',
-    color: colors.accent,
+    color: colors.goldLt,
     fontWeight: 600,
     fontSize: 13,
     cursor: 'pointer',
@@ -203,16 +243,16 @@ const styles = {
     padding: '5px 9px',
     borderRadius: 6,
     border: 'none',
-    background: '#fdeceb',
+    background: 'rgba(192,88,88,0.16)',
     color: colors.danger,
     fontWeight: 600,
     fontSize: 12,
     cursor: 'pointer',
   },
   banner: {
-    background: '#fff6e6',
-    border: '1px solid #f0d99a',
-    color: colors.warn,
+    background: 'rgba(184,147,90,0.12)',
+    border: `1px solid ${colors.gold}`,
+    color: colors.goldLt,
     borderRadius: 10,
     padding: 12,
     marginBottom: 12,
@@ -235,7 +275,7 @@ const styles = {
     bottom: 0,
     left: 0,
     right: 0,
-    background: '#fff',
+    background: colors.panel,
     borderTop: `1px solid ${colors.border}`,
     display: 'flex',
     zIndex: 10,
@@ -246,7 +286,7 @@ const styles = {
     textAlign: 'center',
     fontSize: 11,
     fontWeight: 600,
-    color: active ? colors.accent : colors.muted,
+    color: active ? colors.goldLt : colors.muted,
     cursor: 'pointer',
     background: 'none',
     border: 'none',
@@ -257,8 +297,10 @@ const styles = {
     borderRadius: 999,
     fontSize: 11,
     fontWeight: 700,
-    background: tone === 'bad' ? '#fdeceb' : tone === 'good' ? '#e9f5ec' : '#f0f0f0',
-    color: tone === 'bad' ? colors.danger : tone === 'good' ? colors.accent : colors.muted,
+    fontFamily: fonts.mono,
+    background:
+      tone === 'bad' ? 'rgba(192,88,88,0.16)' : tone === 'good' ? 'rgba(90,155,114,0.16)' : 'rgba(138,136,153,0.16)',
+    color: tone === 'bad' ? colors.danger : tone === 'good' ? colors.ok : colors.muted,
   }),
 }
 
@@ -341,7 +383,13 @@ function LoginScreen({ onLogin }) {
   return (
     <div style={{ ...styles.app, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
       <form onSubmit={submit} style={{ ...styles.card, width: 280 }}>
-        <div style={styles.cardTitle}>Crossing Lodges — Beverage Stock</div>
+        <img
+          src="/logo.png"
+          alt=""
+          style={{ height: 56, width: 'auto', display: 'block', margin: '0 auto 12px' }}
+          onError={(e) => (e.target.style.display = 'none')}
+        />
+        <div style={{ ...styles.cardTitle, textAlign: 'center' }}>Crossing Lodges — Beverage Stock</div>
         <label style={styles.label}>Password</label>
         <input
           type="password"
@@ -491,7 +539,10 @@ export default function App() {
     <div style={styles.app}>
       <div style={styles.header}>
         <div style={{ ...styles.row, justifyContent: 'space-between' }}>
-          <div style={styles.headerTitle}>Crossing Lodges — Beverage Stock</div>
+          <div style={styles.headerTitle}>
+            <img src="/logo.png" alt="" style={styles.logo} onError={(e) => (e.target.style.display = 'none')} />
+            Crossing Lodges — Beverage Stock
+          </div>
           <div style={styles.row}>
             <span style={styles.badge('neutral')}>{role === 'admin' ? 'Admin' : 'Staff'}</span>
             <button style={{ ...styles.pill(false), padding: '4px 10px' }} onClick={logout}>
@@ -502,7 +553,7 @@ export default function App() {
         <div style={styles.row}>
           <div style={styles.pillGroup}>
             {LOCATIONS.map((l) => (
-              <button key={l.id} style={styles.pill(location === l.id)} onClick={() => setLocation(l.id)}>
+              <button key={l.id} style={styles.pill(location === l.id, l.id)} onClick={() => setLocation(l.id)}>
                 {l.id}
               </button>
             ))}
@@ -518,7 +569,14 @@ export default function App() {
 
       <div style={styles.content}>
         {error && (
-          <div style={{ ...styles.banner, background: '#fdeceb', borderColor: '#f0b9b5', color: colors.danger }}>
+          <div
+            style={{
+              ...styles.banner,
+              background: 'rgba(192,88,88,0.12)',
+              borderColor: colors.danger,
+              color: colors.danger,
+            }}
+          >
             {error}
           </div>
         )}
@@ -620,14 +678,14 @@ function DashboardTab({ items, metricsByItem, period }) {
   const tierRow = (label, key) => (
     <tr>
       <td style={styles.td}>{label}</td>
-      <td style={styles.td}>R {fmt(totals.byTier[key].theoreticalValue)}</td>
-      <td style={styles.td}>R {fmt(totals.byTier[key].actualValue)}</td>
+      <td style={styles.tdNum}>R {fmt(totals.byTier[key].theoreticalValue)}</td>
+      <td style={styles.tdNum}>R {fmt(totals.byTier[key].actualValue)}</td>
       <td style={styles.td}>
         <span style={styles.badge(totals.byTier[key].varianceValue < 0 ? 'bad' : 'good')}>
           R {fmt(totals.byTier[key].varianceValue)}
         </span>
       </td>
-      <td style={styles.td}>R {fmt(totals.byTier[key].issuedValue)}</td>
+      <td style={styles.tdNum}>R {fmt(totals.byTier[key].issuedValue)}</td>
     </tr>
   )
 
@@ -650,18 +708,18 @@ function DashboardTab({ items, metricsByItem, period }) {
               <td style={styles.td}>
                 <strong>Total</strong>
               </td>
-              <td style={styles.td}>
+              <td style={styles.tdNum}>
                 <strong>R {fmt(totals.theoreticalValue)}</strong>
               </td>
-              <td style={styles.td}>
+              <td style={styles.tdNum}>
                 <strong>R {fmt(totals.actualValue)}</strong>
               </td>
-              <td style={styles.td}>
+              <td style={styles.tdNum}>
                 <span style={styles.badge(totals.varianceValue < 0 ? 'bad' : 'good')}>
                   R {fmt(totals.varianceValue)}
                 </span>
               </td>
-              <td style={styles.td}>
+              <td style={styles.tdNum}>
                 <strong>R {fmt(totals.issuedValue)}</strong>
               </td>
             </tr>
@@ -695,8 +753,8 @@ function DashboardTab({ items, metricsByItem, period }) {
                 <td style={styles.td}>{item.name}</td>
                 <td style={styles.td}>{item.category}</td>
                 <td style={styles.td}>{item.pricing_tier || 'Included'}</td>
-                <td style={styles.td}>{fmt(m.issuedTotal, 0)}</td>
-                <td style={styles.td}>R {fmt(m.issuedTotal * m.weightedAvgCost)}</td>
+                <td style={styles.tdNum}>{fmt(m.issuedTotal, 0)}</td>
+                <td style={styles.tdNum}>R {fmt(m.issuedTotal * m.weightedAvgCost)}</td>
               </tr>
             ))}
             {fastest.length === 0 && (
@@ -883,8 +941,8 @@ function ItemsTab({ items, metricsByItem, location, onChange }) {
                       onBlur={(e) => updateItem(it.id, { max_units: Number(e.target.value) })}
                     />
                   </td>
-                  <td style={styles.td}>{m ? `R ${fmt(m.weightedAvgCost)}` : '—'}</td>
-                  <td style={styles.td}>{m ? `R ${fmt(currentValue)}` : '—'}</td>
+                  <td style={styles.tdNum}>{m ? `R ${fmt(m.weightedAvgCost)}` : '—'}</td>
+                  <td style={styles.tdNum}>{m ? `R ${fmt(currentValue)}` : '—'}</td>
                   <td style={styles.td}>
                     <button style={styles.buttonDanger} onClick={() => deactivate(it.id)}>
                       Remove
@@ -972,7 +1030,7 @@ function OpeningTab({ items, stockByItem, metricsByItem, location, period, onCha
                     onBlur={(e) => saveOpening(it, 'opening_cost_per_unit', e.target.value)}
                   />
                 </td>
-                <td style={styles.td}>{m ? `R ${fmt(m.weightedAvgCost)}` : '—'}</td>
+                <td style={styles.tdNum}>{m ? `R ${fmt(m.weightedAvgCost)}` : '—'}</td>
               </tr>
             )
           })}
@@ -1085,8 +1143,8 @@ function PurchasesTab({ items, purchases, location, period, onChange }) {
               <tr key={p.id}>
                 <td style={styles.td}>{p.date}</td>
                 <td style={styles.td}>{itemName(p.item_id)}</td>
-                <td style={styles.td}>{fmt(p.units, 0)}</td>
-                <td style={styles.td}>{fmt(p.total_cost_excl_vat)}</td>
+                <td style={styles.tdNum}>{fmt(p.units, 0)}</td>
+                <td style={styles.tdNum}>{fmt(p.total_cost_excl_vat)}</td>
                 <td style={styles.td}>{p.supplier || '—'}</td>
                 <td style={styles.td}>
                   <button style={styles.buttonDanger} onClick={() => removePurchase(p.id)}>
@@ -1199,7 +1257,7 @@ function IssuesTab({ items, issues, location, period, onChange }) {
               <tr key={i.id}>
                 <td style={styles.td}>{i.date}</td>
                 <td style={styles.td}>{itemName(i.item_id)}</td>
-                <td style={styles.td}>{fmt(i.qty, 0)}</td>
+                <td style={styles.tdNum}>{fmt(i.qty, 0)}</td>
                 <td style={styles.td}>{i.note || '—'}</td>
                 <td style={styles.td}>
                   <button style={styles.buttonDanger} onClick={() => removeIssue(i.id)}>
@@ -1273,7 +1331,7 @@ function CountTab({ items, stockByItem, metricsByItem, location, period, onChang
             return (
               <tr key={it.id}>
                 <td style={styles.td}>{it.name}</td>
-                <td style={styles.td}>{fmt(m?.theoreticalClosing, 1)}</td>
+                <td style={styles.tdNum}>{fmt(m?.theoreticalClosing, 1)}</td>
                 <td style={styles.td}>
                   <input
                     type="number"
@@ -1346,11 +1404,11 @@ function VarianceTab({ items, metricsByItem, allClosed, onClosePeriod }) {
             return (
               <tr key={it.id}>
                 <td style={styles.td}>{it.name}</td>
-                <td style={styles.td}>{fmt(m.opening, 1)}</td>
-                <td style={styles.td}>{fmt(m.purchaseUnits, 1)}</td>
-                <td style={styles.td}>{fmt(m.issuedTotal, 1)}</td>
-                <td style={styles.td}>R {fmt(m.weightedAvgCost)}</td>
-                <td style={styles.td}>{fmt(m.theoreticalClosing, 1)}</td>
+                <td style={styles.tdNum}>{fmt(m.opening, 1)}</td>
+                <td style={styles.tdNum}>{fmt(m.purchaseUnits, 1)}</td>
+                <td style={styles.tdNum}>{fmt(m.issuedTotal, 1)}</td>
+                <td style={styles.tdNum}>R {fmt(m.weightedAvgCost)}</td>
+                <td style={styles.tdNum}>{fmt(m.theoreticalClosing, 1)}</td>
                 <td style={styles.td}>{m.hasCount ? fmt(m.closingCount, 1) : '—'}</td>
                 <td style={styles.td}>
                   {m.hasCount ? (
@@ -1359,7 +1417,7 @@ function VarianceTab({ items, metricsByItem, allClosed, onClosePeriod }) {
                     '—'
                   )}
                 </td>
-                <td style={styles.td}>{m.hasCount ? `R ${fmt(m.varianceValue)}` : '—'}</td>
+                <td style={styles.tdNum}>{m.hasCount ? `R ${fmt(m.varianceValue)}` : '—'}</td>
               </tr>
             )
           })}
@@ -1395,9 +1453,9 @@ function OrdersTab({ items, metricsByItem }) {
             return (
               <tr key={it.id}>
                 <td style={styles.td}>{it.name}</td>
-                <td style={styles.td}>{fmt(m.theoreticalClosing, 1)}</td>
-                <td style={styles.td}>{fmt(it.min_units, 0)}</td>
-                <td style={styles.td}>{fmt(it.max_units, 0)}</td>
+                <td style={styles.tdNum}>{fmt(m.theoreticalClosing, 1)}</td>
+                <td style={styles.tdNum}>{fmt(it.min_units, 0)}</td>
+                <td style={styles.tdNum}>{fmt(it.max_units, 0)}</td>
                 <td style={styles.td}>
                   <strong>{fmt(m.reorderQty, 0)}</strong>
                 </td>
