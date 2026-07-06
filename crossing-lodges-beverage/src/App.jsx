@@ -167,13 +167,23 @@ const styles = {
     fontFamily: fonts.mono,
     fontSize: 13,
   },
-  content: { padding: 14, maxWidth: 900, margin: '0 auto' },
+  content: { padding: 14, maxWidth: 1100, margin: '0 auto', boxSizing: 'border-box' },
   card: {
     background: colors.panel,
     border: `1px solid ${colors.border}`,
     borderRadius: 12,
     padding: 14,
     marginBottom: 12,
+    maxWidth: '100%',
+    boxSizing: 'border-box',
+  },
+  tableWrap: {
+    overflowX: 'auto',
+    WebkitOverflowScrolling: 'touch',
+    marginLeft: -14,
+    marginRight: -14,
+    paddingLeft: 14,
+    paddingRight: 14,
   },
   cardTitle: {
     fontFamily: fonts.heading,
@@ -278,14 +288,18 @@ const styles = {
     background: colors.panel,
     borderTop: `1px solid ${colors.border}`,
     display: 'flex',
+    overflowX: 'auto',
+    WebkitOverflowScrolling: 'touch',
     zIndex: 10,
   },
   navItem: (active) => ({
-    flex: 1,
-    padding: '10px 4px 8px',
+    flex: '0 0 auto',
+    minWidth: 72,
+    padding: '10px 12px 8px',
     textAlign: 'center',
     fontSize: 11,
     fontWeight: 600,
+    whiteSpace: 'nowrap',
     color: active ? colors.goldLt : colors.muted,
     cursor: 'pointer',
     background: 'none',
@@ -316,10 +330,8 @@ const ADMIN_TABS = [
 ]
 
 const STAFF_TABS = [
-  { id: 'purchases', label: 'Purchases' },
   { id: 'issues', label: 'Issues' },
   { id: 'count', label: 'Count' },
-  { id: 'orders', label: 'Orders' },
 ]
 
 // ---------------------------------------------------------------------------
@@ -580,12 +592,17 @@ export default function App() {
   return (
     <div style={styles.app}>
       <div style={styles.header}>
-        <div style={{ ...styles.row, justifyContent: 'space-between' }}>
-          <div style={styles.headerTitle}>
-            <img src="/logo.png" alt="" style={styles.logo} onError={(e) => (e.target.style.display = 'none')} />
-            Crossing Lodges — Beverage Stock
+        <div style={{ ...styles.row, justifyContent: 'space-between', flexWrap: 'wrap' }}>
+          <div style={{ ...styles.headerTitle, minWidth: 0, flexShrink: 1 }}>
+            <img
+              src="/logo.png"
+              alt=""
+              style={{ ...styles.logo, flexShrink: 0 }}
+              onError={(e) => (e.target.style.display = 'none')}
+            />
+            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>Crossing Lodges — Beverage Stock</span>
           </div>
-          <div style={styles.row}>
+          <div style={{ ...styles.row, flexShrink: 0 }}>
             <span style={styles.badge('neutral')}>{role === 'admin' ? 'Admin' : 'Staff'}</span>
             <button style={{ ...styles.pill(false), padding: '4px 10px' }} onClick={logout}>
               Log out
@@ -665,7 +682,7 @@ export default function App() {
                 onSave={upsertLocalStockPeriods}
               />
             )}
-            {activeTab === 'purchases' && (
+            {activeTab === 'purchases' && role === 'admin' && (
               <PurchasesTab
                 items={items}
                 purchases={purchases}
@@ -692,6 +709,7 @@ export default function App() {
                 metricsByItem={metricsByItem}
                 location={location}
                 period={period}
+                role={role}
                 onSave={upsertLocalStockPeriods}
               />
             )}
@@ -703,7 +721,9 @@ export default function App() {
                 onClosePeriod={closePeriod}
               />
             )}
-            {activeTab === 'orders' && <OrdersTab items={items} metricsByItem={metricsByItem} />}
+            {activeTab === 'orders' && role === 'admin' && (
+              <OrdersTab items={items} metricsByItem={metricsByItem} />
+            )}
           </>
         )}
       </div>
@@ -756,6 +776,7 @@ function DashboardTab({ items, metricsByItem, period }) {
     <>
       <div style={styles.card}>
         <div style={styles.cardTitle}>Stock value — {period}</div>
+        <div style={styles.tableWrap}>
         <table style={styles.table}>
           <thead>
             <tr>
@@ -790,6 +811,7 @@ function DashboardTab({ items, metricsByItem, period }) {
             {tierRow('Premium', 'Premium')}
           </tbody>
         </table>
+        </div>
         <div style={{ fontSize: 12, color: colors.muted, marginTop: 8 }}>
           "Value variance" only reflects items that have had a physical count this period — it's the
           Rand value gap between what the books say should be on the shelf and what was actually
@@ -800,6 +822,7 @@ function DashboardTab({ items, metricsByItem, period }) {
 
       <div style={styles.card}>
         <div style={styles.cardTitle}>Fastest moving this period</div>
+        <div style={styles.tableWrap}>
         <table style={styles.table}>
           <thead>
             <tr>
@@ -829,6 +852,7 @@ function DashboardTab({ items, metricsByItem, period }) {
             )}
           </tbody>
         </table>
+        </div>
       </div>
 
       <div style={styles.card}>
@@ -836,6 +860,7 @@ function DashboardTab({ items, metricsByItem, period }) {
         <div style={{ fontSize: 12, color: colors.muted, marginBottom: 8 }}>
           Zero issues logged so far this period — candidates to reconsider on the beverage menu.
         </div>
+        <div style={styles.tableWrap}>
         <table style={styles.table}>
           <thead>
             <tr>
@@ -861,6 +886,7 @@ function DashboardTab({ items, metricsByItem, period }) {
             )}
           </tbody>
         </table>
+        </div>
       </div>
     </>
   )
@@ -954,6 +980,7 @@ function ItemsTab({ items, metricsByItem, location, onAdd, onUpdate, onRemove })
 
       <div style={styles.card}>
         <div style={styles.cardTitle}>{items.length} active items</div>
+        <div style={styles.tableWrap}>
         <table style={styles.table}>
           <thead>
             <tr>
@@ -1016,6 +1043,7 @@ function ItemsTab({ items, metricsByItem, location, onAdd, onUpdate, onRemove })
             })}
           </tbody>
         </table>
+        </div>
       </div>
     </>
   )
@@ -1059,6 +1087,7 @@ function OpeningTab({ items, stockByItem, metricsByItem, location, period, onSav
         "Start {period}" has to be run first (see the banner above) before an item shows up here as
         editable.
       </div>
+      <div style={styles.tableWrap}>
       <table style={styles.table}>
         <thead>
           <tr>
@@ -1099,6 +1128,7 @@ function OpeningTab({ items, stockByItem, metricsByItem, location, period, onSav
           })}
         </tbody>
       </table>
+      </div>
     </div>
   )
 }
@@ -1190,6 +1220,7 @@ function PurchasesTab({ items, purchases, location, period, onAdd, onRemove }) {
 
       <div style={styles.card}>
         <div style={styles.cardTitle}>Purchases in {period}</div>
+        <div style={styles.tableWrap}>
         <table style={styles.table}>
           <thead>
             <tr>
@@ -1225,6 +1256,7 @@ function PurchasesTab({ items, purchases, location, period, onAdd, onRemove }) {
             )}
           </tbody>
         </table>
+        </div>
       </div>
     </>
   )
@@ -1305,6 +1337,7 @@ function IssuesTab({ items, issues, location, period, onAdd, onRemove }) {
 
       <div style={styles.card}>
         <div style={styles.cardTitle}>Issues in {period}</div>
+        <div style={styles.tableWrap}>
         <table style={styles.table}>
           <thead>
             <tr>
@@ -1338,6 +1371,7 @@ function IssuesTab({ items, issues, location, period, onAdd, onRemove }) {
             )}
           </tbody>
         </table>
+        </div>
       </div>
     </>
   )
@@ -1347,8 +1381,9 @@ function IssuesTab({ items, issues, location, period, onAdd, onRemove }) {
 // Count tab — enter the physical closing stock count
 // ---------------------------------------------------------------------------
 
-function CountTab({ items, stockByItem, metricsByItem, location, period, onSave }) {
+function CountTab({ items, stockByItem, metricsByItem, location, period, role, onSave }) {
   const [countedBy, setCountedBy] = useState('')
+  const showTheoretical = role === 'admin'
 
   async function saveCount(item, value) {
     const sp = stockByItem[item.id]
@@ -1375,13 +1410,14 @@ function CountTab({ items, stockByItem, metricsByItem, location, period, onSave 
           <input style={styles.input} value={countedBy} onChange={(e) => setCountedBy(e.target.value)} placeholder="Name" />
         </div>
       </div>
+      <div style={styles.tableWrap}>
       <table style={styles.table}>
         <thead>
           <tr>
             <th style={styles.th}>Item</th>
-            <th style={styles.th}>Theoretical</th>
+            {showTheoretical && <th style={styles.th}>Theoretical</th>}
             <th style={styles.th}>Counted</th>
-            <th style={styles.th}>Variance</th>
+            {showTheoretical && <th style={styles.th}>Variance</th>}
           </tr>
         </thead>
         <tbody>
@@ -1391,7 +1427,7 @@ function CountTab({ items, stockByItem, metricsByItem, location, period, onSave 
             return (
               <tr key={it.id}>
                 <td style={styles.td}>{it.name}</td>
-                <td style={styles.tdNum}>{fmt(m?.theoreticalClosing, 1)}</td>
+                {showTheoretical && <td style={styles.tdNum}>{fmt(m?.theoreticalClosing, 1)}</td>}
                 <td style={styles.td}>
                   <input
                     type="number"
@@ -1401,18 +1437,21 @@ function CountTab({ items, stockByItem, metricsByItem, location, period, onSave 
                     onBlur={(e) => saveCount(it, e.target.value)}
                   />
                 </td>
-                <td style={styles.td}>
-                  {m?.hasCount ? (
-                    <span style={styles.badge(m.varianceUnits < 0 ? 'bad' : 'good')}>{fmt(m.varianceUnits, 1)}</span>
-                  ) : (
-                    '—'
-                  )}
-                </td>
+                {showTheoretical && (
+                  <td style={styles.td}>
+                    {m?.hasCount ? (
+                      <span style={styles.badge(m.varianceUnits < 0 ? 'bad' : 'good')}>{fmt(m.varianceUnits, 1)}</span>
+                    ) : (
+                      '—'
+                    )}
+                  </td>
+                )}
               </tr>
             )
           })}
         </tbody>
       </table>
+      </div>
     </div>
   )
 }
@@ -1443,6 +1482,7 @@ function VarianceTab({ items, metricsByItem, allClosed, onClosePeriod }) {
       <div style={{ fontSize: 12, color: colors.muted, marginBottom: 10 }}>
         Total purchases this period: R {fmt(totals.purchaseCost)} · Total variance value: R {fmt(totals.varianceValue)}
       </div>
+      <div style={styles.tableWrap}>
       <table style={styles.table}>
         <thead>
           <tr>
@@ -1483,6 +1523,7 @@ function VarianceTab({ items, metricsByItem, allClosed, onClosePeriod }) {
           })}
         </tbody>
       </table>
+      </div>
     </div>
   )
 }
@@ -1497,6 +1538,7 @@ function OrdersTab({ items, metricsByItem }) {
   return (
     <div style={styles.card}>
       <div style={styles.cardTitle}>To be ordered ({toOrder.length})</div>
+      <div style={styles.tableWrap}>
       <table style={styles.table}>
         <thead>
           <tr>
@@ -1531,6 +1573,7 @@ function OrdersTab({ items, metricsByItem }) {
           )}
         </tbody>
       </table>
+      </div>
     </div>
   )
 }
