@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { sb, LOCATIONS, currentPeriod } from './sb.js'
 
 // ---------------------------------------------------------------------------
@@ -1383,27 +1383,58 @@ function IssuesTab({ items, issues, location, period, onAdd, onRemove }) {
 
 function CountTab({ items, stockByItem, metricsByItem, location, period, role, onSave }) {
   const [countedBy, setCountedBy] = useState('')
+  const [resetKey, setResetKey] = useState(0)
+  const [submitting, setSubmitting] = useState(false)
+  const [status, setStatus] = useState('')
+  const inputRefs = useRef({})
   const showTheoretical = role === 'admin'
 
-  async function saveCount(item, value) {
-    const sp = stockByItem[item.id]
-    const payload = {
-      item_id: item.id,
-      location_id: location,
-      period,
-      opening_units: sp?.opening_units ?? 0,
-      opening_cost_per_unit: sp?.opening_cost_per_unit ?? 0,
-      closing_count_units: value === '' ? null : Number(value),
-      counted_by: countedBy || sp?.counted_by || null,
-      count_date: new Date().toISOString().slice(0, 10),
+  // Fields start blank every time (last count shown only as a faint
+  // placeholder hint) and stay untouched in the database until "Submit
+  // count" is pressed — that way partial progress isn't silently written
+  // field-by-field, and hitting Submit both saves everything in one go and
+  // clears the sheet so it's ready for the next count.
+  async function submitCounts() {
+    setSubmitting(true)
+    setStatus('')
+    const rows = []
+    for (const it of items) {
+      const sp = stockByItem[it.id]
+      if (!sp) continue
+      const el = inputRefs.current[it.id]
+      const raw = el ? el.value.trim() : ''
+      if (raw === '') continue
+      rows.push({
+        item_id: it.id,
+        location_id: location,
+        period,
+        opening_units: sp.opening_units ?? 0,
+        opening_cost_per_unit: sp.opening_cost_per_unit ?? 0,
+        closing_count_units: Number(raw),
+        counted_by: countedBy || sp.counted_by || null,
+        count_date: new Date().toISOString().slice(0, 10),
+      })
     }
-    const saved = await sb.upsert('bev_stock_periods', payload, 'item_id,period')
-    onSave(saved?.[0] || payload)
+
+    if (rows.length) {
+      const saved = await sb.upsert('bev_stock_periods', rows, 'item_id,period')
+      onSave(saved || rows)
+      setStatus(`Saved ${rows.length} count${rows.length === 1 ? '' : 's'} — sheet cleared for the next count.`)
+    } else {
+      setStatus('Nothing to save — every field was empty.')
+    }
+    setSubmitting(false)
+    setResetKey((k) => k + 1) // remounts every input blank, whether or not it was saved
   }
 
   return (
     <div style={styles.card}>
       <div style={styles.cardTitle}>Physical stock count — {period}</div>
+      <div style={{ fontSize: 12, color: colors.muted, marginBottom: 10 }}>
+        Fields start empty each time — the grey number is just a reminder of the last count, not a
+        live value. Fill in what you're counting today, then hit Submit; anything left blank is
+        skipped and keeps its last saved count.
+      </div>
       <div style={styles.formGrid}>
         <div>
           <label style={styles.label}>Counted by</label>
@@ -1430,11 +1461,15 @@ function CountTab({ items, stockByItem, metricsByItem, location, period, role, o
                 {showTheoretical && <td style={styles.tdNum}>{fmt(m?.theoreticalClosing, 1)}</td>}
                 <td style={styles.td}>
                   <input
+                    key={`${it.id}-${resetKey}`}
+                    ref={(el) => {
+                      inputRefs.current[it.id] = el
+                    }}
                     type="number"
                     style={styles.smallInput}
-                    defaultValue={sp?.closing_count_units ?? ''}
+                    defaultValue=""
+                    placeholder={sp?.closing_count_units ?? ''}
                     disabled={!sp}
-                    onBlur={(e) => saveCount(it, e.target.value)}
                   />
                 </td>
                 {showTheoretical && (
@@ -1451,6 +1486,12 @@ function CountTab({ items, stockByItem, metricsByItem, location, period, role, o
           })}
         </tbody>
       </table>
+      </div>
+      <div style={{ ...styles.row, justifyContent: 'space-between', marginTop: 12, flexWrap: 'wrap' }}>
+        <div style={{ fontSize: 12, color: colors.muted }}>{status}</div>
+        <button style={styles.button} onClick={submitCounts} disabled={submitting}>
+          {submitting ? 'Saving…' : 'Submit count'}
+        </button>
       </div>
     </div>
   )
