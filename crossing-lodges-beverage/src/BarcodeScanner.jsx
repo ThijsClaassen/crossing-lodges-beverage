@@ -1,0 +1,102 @@
+import { useEffect, useRef, useState } from 'react'
+import { BrowserMultiFormatReader } from '@zxing/browser'
+import { colors, fonts } from './theme.js'
+
+// Full-screen camera overlay that continuously reads 1D barcodes (UPC/EAN —
+// the kind printed on bottles and cans) from the device's rear camera and
+// reports each decoded value via onScan. Used by the Count tab's "Scan
+// mode." Requires HTTPS (Vercel provides this) and a camera permission
+// prompt the first time it's used.
+
+export default function BarcodeScanner({ onScan, onClose }) {
+  const videoRef = useRef(null)
+  const readerRef = useRef(null)
+  const lastScanRef = useRef({ code: '', time: 0 })
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    const reader = new BrowserMultiFormatReader()
+    readerRef.current = reader
+    let cancelled = false
+
+    reader
+      .decodeFromConstraints(
+        { audio: false, video: { facingMode: 'environment' } },
+        videoRef.current,
+        (result) => {
+          if (cancelled || !result) return
+          const code = result.getText()
+          const now = Date.now()
+          // The camera re-decodes the same barcode on every frame while it's
+          // in view — ignore repeats of the same code within 2s so one scan
+          // doesn't fire the callback dozens of times.
+          if (code === lastScanRef.current.code && now - lastScanRef.current.time < 2000) return
+          lastScanRef.current = { code, time: now }
+          onScan(code)
+        }
+      )
+      .catch((err) => {
+        if (!cancelled) setError(err?.message || 'Could not access the camera.')
+      })
+
+    return () => {
+      cancelled = true
+      reader.reset()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  return (
+    <div
+      style={{
+        position: 'fixed',
+        inset: 0,
+        background: 'rgba(0,0,0,0.85)',
+        zIndex: 50,
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        justifyContent: 'center',
+        padding: 16,
+      }}
+    >
+      <div style={{ width: '100%', maxWidth: 480 }}>
+        <video
+          ref={videoRef}
+          style={{
+            width: '100%',
+            borderRadius: 12,
+            border: `2px solid ${colors.gold}`,
+            background: '#000',
+          }}
+          muted
+          playsInline
+        />
+        <div style={{ fontFamily: fonts.body, color: colors.cream, fontSize: 13, textAlign: 'center', margin: '12px 0' }}>
+          Point the camera at a bottle or can's barcode.
+        </div>
+        {error && (
+          <div style={{ color: colors.danger, fontSize: 12, textAlign: 'center', marginBottom: 12 }}>{error}</div>
+        )}
+        <button
+          onClick={onClose}
+          style={{
+            display: 'block',
+            margin: '0 auto',
+            padding: '9px 18px',
+            borderRadius: 8,
+            border: `1px solid ${colors.gold}`,
+            background: 'transparent',
+            color: colors.goldLt,
+            fontFamily: fonts.body,
+            fontWeight: 600,
+            fontSize: 13,
+            cursor: 'pointer',
+          }}
+        >
+          Stop scanning
+        </button>
+      </div>
+    </div>
+  )
+}
