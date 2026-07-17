@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { sb, LOCATIONS, currentPeriod } from './sb.js'
+import { colors, fonts } from './theme.js'
+import BarcodeScanner from './BarcodeScanner.jsx'
 
 // ---------------------------------------------------------------------------
 // Small helpers
@@ -95,28 +97,6 @@ function aggregateValues(items, metricsByItem) {
 // ---------------------------------------------------------------------------
 // Shared styles (inline CSS-in-JS, mirrors the ops app's approach)
 // ---------------------------------------------------------------------------
-
-// Crossing Lodges shared brand palette (same tokens as the ops app) -----------
-const colors = {
-  bg: '#1E1D2B',
-  panel: '#28273A',
-  border: '#3A3850',
-  cream: '#F0EDE6',
-  muted: '#8A8899',
-  navy: '#3C3B5A',
-  navyLt: '#4E4D72',
-  gold: '#B8935A',
-  goldLt: '#D4AF7A',
-  ok: '#5A9B72',
-  danger: '#C05858',
-  loc: { ZC: '#B8935A', EC: '#5B8CC4', SC: '#7BAE7F' },
-}
-
-const fonts = {
-  body: "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
-  heading: "'Cormorant Garamond', serif",
-  mono: "'Space Mono', monospace",
-}
 
 const styles = {
   app: {
@@ -711,6 +691,7 @@ export default function App() {
                 period={period}
                 role={role}
                 onSave={upsertLocalStockPeriods}
+                onLinkItem={updateLocalItem}
               />
             )}
             {activeTab === 'variance' && role === 'admin' && (
@@ -1381,13 +1362,65 @@ function IssuesTab({ items, issues, location, period, onAdd, onRemove }) {
 // Count tab — enter the physical closing stock count
 // ---------------------------------------------------------------------------
 
-function CountTab({ items, stockByItem, metricsByItem, location, period, role, onSave }) {
+function CountTab({ items, stockByItem, metricsByItem, location, period, role, onSave, onLinkItem }) {
   const [countedBy, setCountedBy] = useState('')
   const [resetKey, setResetKey] = useState(0)
   const [submitting, setSubmitting] = useState(false)
   const [status, setStatus] = useState('')
+  const [scanning, setScanning] = useState(false)
+  const [activeScanItemId, setActiveScanItemId] = useState(null)
+  const [linkingBarcode, setLinkingBarcode] = useState(null)
+  const [linkItemId, setLinkItemId] = useState('')
+  const [linking, setLinking] = useState(false)
   const inputRefs = useRef({})
   const showTheoretical = role === 'admin'
+
+  function focusItem(id) {
+    setActiveScanItemId(id)
+    // Let the row render before focusing — the input may have just remounted.
+    setTimeout(() => {
+      const el = inputRefs.current[id]
+      if (el) {
+        el.focus()
+        el.select?.()
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      }
+    }, 50)
+  }
+
+  function handleScan(code) {
+    const match = items.find((it) => it.barcode === code)
+    setScanning(false)
+    if (match) {
+      setLinkingBarcode(null)
+      setStatus(`Scanned: ${match.name} — type the count and press Enter to scan the next item.`)
+      focusItem(match.id)
+    } else {
+      setStatus('')
+      setLinkingBarcode(code)
+      setLinkItemId('')
+    }
+  }
+
+  async function linkBarcode() {
+    if (!linkItemId || !linkingBarcode) return
+    setLinking(true)
+    const [row] = await sb.update('bev_items', { id: linkItemId }, { barcode: linkingBarcode })
+    onLinkItem(row)
+    setLinking(false)
+    setLinkingBarcode(null)
+    setStatus(`Linked to ${row?.name || 'item'} — scan it again next time to jump straight there.`)
+    focusItem(linkItemId)
+    setLinkItemId('')
+  }
+
+  function handleCountKeyDown(e, itemId) {
+    if (e.key === 'Enter' && activeScanItemId === itemId) {
+      e.preventDefault()
+      e.target.blur()
+      setScanning(true)
+    }
+  }
 
   // Fields start blank every time (last count shown only as a faint
   // placeholder hint) and stay untouched in the database until "Submit
@@ -1429,11 +1462,17 @@ function CountTab({ items, stockByItem, metricsByItem, location, period, role, o
 
   return (
     <div style={styles.card}>
-      <div style={styles.cardTitle}>Physical stock count — {period}</div>
+      <div style={{ ...styles.row, justifyContent: 'space-between' }}>
+        <div style={styles.cardTitle}>Physical stock count — {period}</div>
+        <button style={styles.buttonGhost} onClick={() => setScanning(true)}>
+          Scan barcode
+        </button>
+      </div>
       <div style={{ fontSize: 12, color: colors.muted, marginBottom: 10 }}>
         Fields start empty each time — the grey number is just a reminder of the last count, not a
         live value. Fill in what you're counting today, then hit Submit; anything left blank is
-        skipped and keeps its last saved count.
+        skipped and keeps its last saved count. Scanning a bottle jumps straight to its row —
+        type the count and press Enter to scan the next one.
       </div>
       <div style={styles.formGrid}>
         <div>
@@ -1441,6 +1480,29 @@ function CountTab({ items, stockByItem, metricsByItem, location, period, role, o
           <input style={styles.input} value={countedBy} onChange={(e) => setCountedBy(e.target.value)} placeholder="Name" />
         </div>
       </div>
+
+      {linkingBarcode && (
+        <div style={styles.banner}>
+          <span>Unknown barcode ({linkingBarcode}) — link it to an item:</span>
+          <div style={{ ...styles.row, flexWrap: 'wrap' }}>
+            <select style={styles.input} value={linkItemId} onChange={(e) => setLinkItemId(e.target.value)}>
+              <option value="">Choose item…</option>
+              {items.map((it) => (
+                <option key={it.id} value={it.id}>
+                  {it.name}
+                </option>
+              ))}
+            </select>
+            <button style={styles.button} onClick={linkBarcode} disabled={!linkItemId || linking}>
+              {linking ? 'Linking…' : 'Link'}
+            </button>
+            <button style={styles.buttonGhost} onClick={() => setLinkingBarcode(null)}>
+              Skip
+            </button>
+          </div>
+        </div>
+      )}
+
       <div style={styles.tableWrap}>
       <table style={styles.table}>
         <thead>
@@ -1455,9 +1517,15 @@ function CountTab({ items, stockByItem, metricsByItem, location, period, role, o
           {items.map((it) => {
             const m = metricsByItem[it.id]
             const sp = stockByItem[it.id]
+            const active = activeScanItemId === it.id
             return (
-              <tr key={it.id}>
-                <td style={styles.td}>{it.name}</td>
+              <tr key={it.id} style={active ? { background: 'rgba(184,147,90,0.14)' } : undefined}>
+                <td style={styles.td}>
+                  {it.name}
+                  {it.barcode && (
+                    <span style={{ ...styles.badge('neutral'), marginLeft: 6, fontSize: 9 }}>linked</span>
+                  )}
+                </td>
                 {showTheoretical && <td style={styles.tdNum}>{fmt(m?.theoreticalClosing, 1)}</td>}
                 <td style={styles.td}>
                   <input
@@ -1470,6 +1538,7 @@ function CountTab({ items, stockByItem, metricsByItem, location, period, role, o
                     defaultValue=""
                     placeholder={sp?.closing_count_units ?? ''}
                     disabled={!sp}
+                    onKeyDown={(e) => handleCountKeyDown(e, it.id)}
                   />
                 </td>
                 {showTheoretical && (
@@ -1493,6 +1562,8 @@ function CountTab({ items, stockByItem, metricsByItem, location, period, role, o
           {submitting ? 'Saving…' : 'Submit count'}
         </button>
       </div>
+
+      {scanning && <BarcodeScanner onScan={handleScan} onClose={() => setScanning(false)} />}
     </div>
   )
 }
