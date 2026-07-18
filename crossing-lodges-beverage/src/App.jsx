@@ -25,6 +25,11 @@ function fmt(n, decimals = 2) {
   })
 }
 
+// Reasons an issue can be logged under. "Service" is normal guest
+// consumption (what "issues" always meant); everything else is a write-off.
+// Plain list, not a DB enum — add another reason here any time.
+const ISSUE_REASONS = ['Service', 'Breakage', 'Expired', 'Staff', 'Other']
+
 function computeMetrics(item, stockPeriod, itemPurchases, itemIssues) {
   const opening = stockPeriod?.opening_units ?? 0
   const openingCost = stockPeriod?.opening_cost_per_unit ?? 0
@@ -32,10 +37,20 @@ function computeMetrics(item, stockPeriod, itemPurchases, itemIssues) {
   const purchaseCost = itemPurchases.reduce((s, p) => s + Number(p.total_cost_excl_vat || 0), 0)
   const issuedTotal = itemIssues.reduce((s, i) => s + Number(i.qty || 0), 0)
 
+  // "Service" (or missing/legacy reason) = normal movement. Anything else
+  // logged under a reason = a write-off (breakage, expired, staff, other).
+  const serviceUnits = itemIssues
+    .filter((i) => !i.reason || i.reason === 'Service')
+    .reduce((s, i) => s + Number(i.qty || 0), 0)
+  const writeOffUnits = issuedTotal - serviceUnits
+
   const weightedAvgCost =
     opening + purchaseUnits > 0
       ? (opening * openingCost + purchaseCost) / (opening + purchaseUnits)
       : openingCost
+
+  const serviceValue = serviceUnits * weightedAvgCost
+  const writeOffValue = writeOffUnits * weightedAvgCost
 
   const theoreticalClosing = opening + purchaseUnits - issuedTotal
   const closingCount = stockPeriod?.closing_count_units
@@ -55,6 +70,10 @@ function computeMetrics(item, stockPeriod, itemPurchases, itemIssues) {
     purchaseCost,
     weightedAvgCost,
     issuedTotal,
+    serviceUnits,
+    writeOffUnits,
+    serviceValue,
+    writeOffValue,
     theoreticalClosing,
     closingCount,
     hasCount,
@@ -92,6 +111,41 @@ function aggregateValues(items, metricsByItem) {
     totals.byTier[tier].issuedValue += issuedValue
   }
   return totals
+}
+
+// Rolls per-item metrics up by supplier, for the Dashboard's "By supplier"
+// section and the Orders tab. Items with no supplier assigned land in a
+// single "Unassigned" bucket rather than being dropped.
+const UNASSIGNED_SUPPLIER = '__unassigned__'
+
+function aggregateBySupplier(items, metricsByItem) {
+  const blank = () => ({
+    theoreticalValue: 0,
+    actualValue: 0,
+    serviceUnits: 0,
+    serviceValue: 0,
+    writeOffUnits: 0,
+    writeOffValue: 0,
+    itemCount: 0,
+  })
+  const bySupplier = {}
+
+  for (const it of items) {
+    const m = metricsByItem[it.id]
+    if (!m) continue
+    const key = it.supplier_id || UNASSIGNED_SUPPLIER
+    if (!bySupplier[key]) bySupplier[key] = blank()
+    const bucket = bySupplier[key]
+    bucket.theoreticalValue += m.theoreticalClosing * m.weightedAvgCost
+    bucket.actualValue += (m.hasCount ? m.closingCount : m.theoreticalClosing) * m.weightedAvgCost
+    bucket.serviceUnits += m.serviceUnits
+    bucket.serviceValue += m.serviceValue
+    bucket.writeOffUnits += m.writeOffUnits
+    bucket.writeOffValue += m.writeOffValue
+    bucket.itemCount += 1
+  }
+
+  return bySupplier
 }
 
 // ---------------------------------------------------------------------------
@@ -301,6 +355,7 @@ const styles = {
 const ADMIN_TABS = [
   { id: 'dashboard', label: 'Dashboard' },
   { id: 'items', label: 'Items' },
+  { id: 'suppliers', label: 'Suppliers' },
   { id: 'opening', label: 'Opening' },
   { id: 'purchases', label: 'Purchases' },
   { id: 'issues', label: 'Issues' },
@@ -409,22 +464,25 @@ export default function App() {
   const [stockPeriods, setStockPeriods] = useState([])
   const [purchases, setPurchases] = useState([])
   const [issues, setIssues] = useState([])
+  const [suppliers, setSuppliers] = useState([])
   const [error, setError] = useState(null)
 
   async function loadAll() {
     setLoading(true)
     setError(null)
     try {
-      const [itemsRes, spRes, purRes, issRes] = await Promise.all([
+      const [itemsRes, spRes, purRes, issRes, supRes] = await Promise.all([
         sb.select('bev_items', { location_id: location, active: true }, { order: 'category.asc,name.asc' }),
         sb.select('bev_stock_periods', { location_id: location, period }, {}),
         sb.select('bev_purchases', { location_id: location, period }, { order: 'date.asc' }),
         sb.select('bev_issues', { location_id: location, period }, { order: 'date.asc' }),
+        sb.select('bev_suppliers', { location_id: location, active: true }, { order: 'name.asc' }),
       ])
       setItems(itemsRes || [])
       setStockPeriods(spRes || [])
       setPurchases(purRes || [])
       setIssues(issRes || [])
+      setSuppliers(supRes || [])
     } catch (e) {
       setError(e.message)
     } finally {
@@ -465,6 +523,16 @@ export default function App() {
     setItems((prev) => prev.filter((it) => it.id !== id))
   }
 
+  function addLocalSupplier(row) {
+    setSuppliers((prev) => [...prev, row])
+  }
+  function updateLocalSupplier(row) {
+    setSuppliers((prev) => prev.map((s) => (s.id === row.id ? row : s)))
+  }
+  function removeLocalSupplier(id) {
+    setSuppliers((prev) => prev.filter((s) => s.id !== id))
+  }
+
   function addLocalPurchase(row) {
     setPurchases((prev) => [...prev, row])
   }
@@ -496,6 +564,12 @@ export default function App() {
     for (const i of issues) (map[i.item_id] ||= []).push(i)
     return map
   }, [issues])
+
+  const supplierById = useMemo(() => {
+    const map = {}
+    for (const s of suppliers) map[s.id] = s
+    return map
+  }, [suppliers])
 
   const metricsByItem = useMemo(() => {
     const map = {}
@@ -640,16 +714,32 @@ export default function App() {
         ) : (
           <>
             {activeTab === 'dashboard' && role === 'admin' && (
-              <DashboardTab items={items} metricsByItem={metricsByItem} period={period} />
+              <DashboardTab
+                items={items}
+                metricsByItem={metricsByItem}
+                period={period}
+                suppliers={suppliers}
+                supplierById={supplierById}
+              />
             )}
             {activeTab === 'items' && role === 'admin' && (
               <ItemsTab
                 items={items}
                 metricsByItem={metricsByItem}
                 location={location}
+                suppliers={suppliers}
                 onAdd={addLocalItem}
                 onUpdate={updateLocalItem}
                 onRemove={removeLocalItem}
+              />
+            )}
+            {activeTab === 'suppliers' && role === 'admin' && (
+              <SuppliersTab
+                suppliers={suppliers}
+                location={location}
+                onAdd={addLocalSupplier}
+                onUpdate={updateLocalSupplier}
+                onRemove={removeLocalSupplier}
               />
             )}
             {activeTab === 'opening' && role === 'admin' && (
@@ -703,7 +793,7 @@ export default function App() {
               />
             )}
             {activeTab === 'orders' && role === 'admin' && (
-              <OrdersTab items={items} metricsByItem={metricsByItem} />
+              <OrdersTab items={items} metricsByItem={metricsByItem} suppliers={suppliers} supplierById={supplierById} />
             )}
           </>
         )}
@@ -725,8 +815,23 @@ export default function App() {
 // which items are moving fastest / not selling at all this period.
 // ---------------------------------------------------------------------------
 
-function DashboardTab({ items, metricsByItem, period }) {
+function DashboardTab({ items, metricsByItem, period, suppliers, supplierById }) {
   const totals = useMemo(() => aggregateValues(items, metricsByItem), [items, metricsByItem])
+  const bySupplier = useMemo(() => aggregateBySupplier(items, metricsByItem), [items, metricsByItem])
+  const supplierRows = useMemo(() => {
+    const rows = Object.entries(bySupplier).map(([key, vals]) => ({
+      key,
+      name: key === UNASSIGNED_SUPPLIER ? 'Unassigned' : supplierById[key]?.name || 'Unknown supplier',
+      ...vals,
+    }))
+    // Unassigned always sorts last; otherwise biggest stock value first.
+    rows.sort((a, b) => {
+      if (a.key === UNASSIGNED_SUPPLIER) return 1
+      if (b.key === UNASSIGNED_SUPPLIER) return -1
+      return b.actualValue - a.actualValue
+    })
+    return rows
+  }, [bySupplier, supplierById])
 
   const ranked = useMemo(
     () =>
@@ -798,6 +903,56 @@ function DashboardTab({ items, metricsByItem, period }) {
           Rand value gap between what the books say should be on the shelf and what was actually
           counted (negative means stock is missing). Items not yet counted fall back to the
           theoretical estimate in both columns, so the totals stay complete.
+        </div>
+      </div>
+
+      <div style={styles.card}>
+        <div style={styles.cardTitle}>By supplier — {period}</div>
+        <div style={{ fontSize: 12, color: colors.muted, marginBottom: 10 }}>
+          "Movement" is Service issues (normal guest consumption). "Write-offs" is everything else
+          logged on the Issues tab — breakage, expired stock, staff usage, other.
+        </div>
+        <div style={styles.tableWrap}>
+        <table style={styles.table}>
+          <thead>
+            <tr>
+              <th style={styles.th}>Supplier</th>
+              <th style={styles.th}>Items</th>
+              <th style={styles.th}>Stock value</th>
+              <th style={styles.th}>Movement (qty)</th>
+              <th style={styles.th}>Movement (value)</th>
+              <th style={styles.th}>Write-offs (qty)</th>
+              <th style={styles.th}>Write-offs (value)</th>
+            </tr>
+          </thead>
+          <tbody>
+            {supplierRows.map((row) => (
+              <tr key={row.key}>
+                <td style={styles.td}>{row.name}</td>
+                <td style={styles.tdNum}>{row.itemCount}</td>
+                <td style={styles.tdNum}>R {fmt(row.actualValue)}</td>
+                <td style={styles.tdNum}>{fmt(row.serviceUnits, 0)}</td>
+                <td style={styles.tdNum}>R {fmt(row.serviceValue)}</td>
+                <td style={styles.tdNum}>{fmt(row.writeOffUnits, 0)}</td>
+                <td style={styles.tdNum}>
+                  {row.writeOffValue > 0 ? (
+                    <span style={styles.badge('bad')}>R {fmt(row.writeOffValue)}</span>
+                  ) : (
+                    `R ${fmt(row.writeOffValue)}`
+                  )}
+                </td>
+              </tr>
+            ))}
+            {supplierRows.length === 0 && (
+              <tr>
+                <td style={styles.td} colSpan={7}>
+                  No suppliers linked yet — add suppliers and link items to them on the Suppliers and
+                  Items tabs.
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
         </div>
       </div>
 
@@ -877,12 +1032,13 @@ function DashboardTab({ items, metricsByItem, period }) {
 // Items tab — manage the beverage master list for the selected lodge
 // ---------------------------------------------------------------------------
 
-function ItemsTab({ items, metricsByItem, location, onAdd, onUpdate, onRemove }) {
+function ItemsTab({ items, metricsByItem, location, suppliers, onAdd, onUpdate, onRemove }) {
   const [form, setForm] = useState({
     name: '',
     category: 'Beer',
     count_unit: 'ea',
     pricing_tier: 'Included',
+    supplier_id: '',
     min_units: 24,
     max_units: 72,
   })
@@ -891,8 +1047,16 @@ function ItemsTab({ items, metricsByItem, location, onAdd, onUpdate, onRemove })
   async function addItem() {
     if (!form.name.trim()) return
     setSaving(true)
-    const [row] = await sb.insert('bev_items', { ...form, location_id: location })
-    setForm({ name: '', category: 'Beer', count_unit: 'ea', pricing_tier: 'Included', min_units: 24, max_units: 72 })
+    const [row] = await sb.insert('bev_items', { ...form, supplier_id: form.supplier_id || null, location_id: location })
+    setForm({
+      name: '',
+      category: 'Beer',
+      count_unit: 'ea',
+      pricing_tier: 'Included',
+      supplier_id: '',
+      min_units: 24,
+      max_units: 72,
+    })
     setSaving(false)
     onAdd(row)
   }
@@ -936,6 +1100,21 @@ function ItemsTab({ items, metricsByItem, location, onAdd, onUpdate, onRemove })
             </select>
           </div>
           <div>
+            <label style={styles.label}>Supplier</label>
+            <select
+              style={styles.input}
+              value={form.supplier_id}
+              onChange={(e) => setForm({ ...form, supplier_id: e.target.value })}
+            >
+              <option value="">No supplier</option>
+              {suppliers.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.name}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div>
             <label style={styles.label}>Min units</label>
             <input
               type="number"
@@ -968,6 +1147,7 @@ function ItemsTab({ items, metricsByItem, location, onAdd, onUpdate, onRemove })
               <th style={styles.th}>Name</th>
               <th style={styles.th}>Category</th>
               <th style={styles.th}>Tier</th>
+              <th style={styles.th}>Supplier</th>
               <th style={styles.th}>Unit</th>
               <th style={styles.th}>Barcode</th>
               <th style={styles.th}>Min</th>
@@ -994,6 +1174,20 @@ function ItemsTab({ items, metricsByItem, location, onAdd, onUpdate, onRemove })
                     >
                       <option value="Included">Included</option>
                       <option value="Premium">Premium</option>
+                    </select>
+                  </td>
+                  <td style={styles.td}>
+                    <select
+                      style={styles.smallInput}
+                      defaultValue={it.supplier_id || ''}
+                      onChange={(e) => updateItem(it.id, { supplier_id: e.target.value || null })}
+                    >
+                      <option value="">No supplier</option>
+                      {suppliers.map((s) => (
+                        <option key={s.id} value={s.id}>
+                          {s.name}
+                        </option>
+                      ))}
                     </select>
                   </td>
                   <td style={styles.td}>{it.count_unit}</td>
@@ -1121,6 +1315,137 @@ function OpeningTab({ items, stockByItem, metricsByItem, location, period, onSav
       </table>
       </div>
     </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Suppliers tab — manage the supplier list for the selected lodge, linked
+// to items via bev_items.supplier_id.
+// ---------------------------------------------------------------------------
+
+function SuppliersTab({ suppliers, location, onAdd, onUpdate, onRemove }) {
+  const [form, setForm] = useState({ name: '', contact_name: '', phone: '', email: '', notes: '' })
+  const [saving, setSaving] = useState(false)
+
+  async function addSupplier() {
+    if (!form.name.trim()) return
+    setSaving(true)
+    const [row] = await sb.insert('bev_suppliers', { ...form, location_id: location })
+    setForm({ name: '', contact_name: '', phone: '', email: '', notes: '' })
+    setSaving(false)
+    onAdd(row)
+  }
+
+  async function updateSupplier(id, patch) {
+    const [row] = await sb.update('bev_suppliers', { id }, patch)
+    onUpdate(row)
+  }
+
+  async function deactivate(id) {
+    await sb.update('bev_suppliers', { id }, { active: false })
+    onRemove(id)
+  }
+
+  return (
+    <>
+      <div style={styles.card}>
+        <div style={styles.cardTitle}>Add supplier</div>
+        <div style={styles.formGrid}>
+          <div>
+            <label style={styles.label}>Name</label>
+            <input style={styles.input} value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
+          </div>
+          <div>
+            <label style={styles.label}>Contact name</label>
+            <input
+              style={styles.input}
+              value={form.contact_name}
+              onChange={(e) => setForm({ ...form, contact_name: e.target.value })}
+            />
+          </div>
+          <div>
+            <label style={styles.label}>Phone</label>
+            <input style={styles.input} value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} />
+          </div>
+          <div>
+            <label style={styles.label}>Email</label>
+            <input style={styles.input} value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} />
+          </div>
+          <div>
+            <label style={styles.label}>Notes</label>
+            <input style={styles.input} value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} />
+          </div>
+        </div>
+        <button style={styles.button} onClick={addSupplier} disabled={saving}>
+          {saving ? 'Adding…' : 'Add supplier'}
+        </button>
+      </div>
+
+      <div style={styles.card}>
+        <div style={styles.cardTitle}>{suppliers.length} suppliers</div>
+        <div style={styles.tableWrap}>
+        <table style={styles.table}>
+          <thead>
+            <tr>
+              <th style={styles.th}>Name</th>
+              <th style={styles.th}>Contact</th>
+              <th style={styles.th}>Phone</th>
+              <th style={styles.th}>Email</th>
+              <th style={styles.th}>Notes</th>
+              <th style={styles.th}></th>
+            </tr>
+          </thead>
+          <tbody>
+            {suppliers.map((s) => (
+              <tr key={s.id}>
+                <td style={styles.td}>{s.name}</td>
+                <td style={styles.td}>
+                  <input
+                    style={{ ...styles.smallInput, width: 130 }}
+                    defaultValue={s.contact_name || ''}
+                    onBlur={(e) => updateSupplier(s.id, { contact_name: e.target.value })}
+                  />
+                </td>
+                <td style={styles.td}>
+                  <input
+                    style={{ ...styles.smallInput, width: 110 }}
+                    defaultValue={s.phone || ''}
+                    onBlur={(e) => updateSupplier(s.id, { phone: e.target.value })}
+                  />
+                </td>
+                <td style={styles.td}>
+                  <input
+                    style={{ ...styles.smallInput, width: 160 }}
+                    defaultValue={s.email || ''}
+                    onBlur={(e) => updateSupplier(s.id, { email: e.target.value })}
+                  />
+                </td>
+                <td style={styles.td}>
+                  <input
+                    style={{ ...styles.smallInput, width: 160 }}
+                    defaultValue={s.notes || ''}
+                    onBlur={(e) => updateSupplier(s.id, { notes: e.target.value })}
+                  />
+                </td>
+                <td style={styles.td}>
+                  <button style={styles.buttonDanger} onClick={() => deactivate(s.id)}>
+                    Remove
+                  </button>
+                </td>
+              </tr>
+            ))}
+            {suppliers.length === 0 && (
+              <tr>
+                <td style={styles.td} colSpan={6}>
+                  No suppliers yet — add one above, then link items to it from the Items tab.
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+        </div>
+      </div>
+    </>
   )
 }
 
@@ -1262,6 +1587,7 @@ function IssuesTab({ items, issues, location, period, onAdd, onRemove }) {
     item_id: items[0]?.id || '',
     date: new Date().toISOString().slice(0, 10),
     qty: '',
+    reason: 'Service',
     note: '',
   })
   const [saving, setSaving] = useState(false)
@@ -1275,6 +1601,7 @@ function IssuesTab({ items, issues, location, period, onAdd, onRemove }) {
       period: toPeriod(form.date),
       date: form.date,
       qty: Number(form.qty),
+      reason: form.reason,
       note: form.note,
     })
     setForm({ ...form, qty: '', note: '' })
@@ -1294,8 +1621,8 @@ function IssuesTab({ items, issues, location, period, onAdd, onRemove }) {
       <div style={styles.card}>
         <div style={styles.cardTitle}>Log issued stock</div>
         <div style={{ fontSize: 12, color: colors.muted, marginBottom: 10 }}>
-          v1 tracks a simple daily total per item. Breaking this down by cost centre (Kitchen, Guest
-          Groups, Staff, etc.) can be added later without changing this table's structure.
+          Tracks a simple daily total per item. "Service" is normal guest consumption — everything
+          else (Breakage, Expired, Staff, Other) is a write-off, tracked separately on the Dashboard.
         </div>
         <div style={styles.formGrid}>
           <div>
@@ -1317,6 +1644,16 @@ function IssuesTab({ items, issues, location, period, onAdd, onRemove }) {
             <input type="number" style={styles.input} value={form.qty} onChange={(e) => setForm({ ...form, qty: e.target.value })} />
           </div>
           <div>
+            <label style={styles.label}>Reason</label>
+            <select style={styles.input} value={form.reason} onChange={(e) => setForm({ ...form, reason: e.target.value })}>
+              {ISSUE_REASONS.map((r) => (
+                <option key={r} value={r}>
+                  {r === 'Service' ? 'Service (normal consumption)' : r}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div>
             <label style={styles.label}>Note (optional)</label>
             <input style={styles.input} value={form.note} onChange={(e) => setForm({ ...form, note: e.target.value })} />
           </div>
@@ -1335,6 +1672,7 @@ function IssuesTab({ items, issues, location, period, onAdd, onRemove }) {
               <th style={styles.th}>Date</th>
               <th style={styles.th}>Item</th>
               <th style={styles.th}>Qty</th>
+              <th style={styles.th}>Reason</th>
               <th style={styles.th}>Note</th>
               <th style={styles.th}></th>
             </tr>
@@ -1345,6 +1683,13 @@ function IssuesTab({ items, issues, location, period, onAdd, onRemove }) {
                 <td style={styles.td}>{i.date}</td>
                 <td style={styles.td}>{itemName(i.item_id)}</td>
                 <td style={styles.tdNum}>{fmt(i.qty, 0)}</td>
+                <td style={styles.td}>
+                  {!i.reason || i.reason === 'Service' ? (
+                    i.reason || 'Service'
+                  ) : (
+                    <span style={styles.badge('bad')}>{i.reason}</span>
+                  )}
+                </td>
                 <td style={styles.td}>{i.note || '—'}</td>
                 <td style={styles.td}>
                   <button style={styles.buttonDanger} onClick={() => removeIssue(i.id)}>
@@ -1355,7 +1700,7 @@ function IssuesTab({ items, issues, location, period, onAdd, onRemove }) {
             ))}
             {issues.length === 0 && (
               <tr>
-                <td style={styles.td} colSpan={5}>
+                <td style={styles.td} colSpan={6}>
                   No issues logged yet.
                 </td>
               </tr>
@@ -1654,48 +1999,92 @@ function VarianceTab({ items, metricsByItem, allClosed, onClosePeriod }) {
 // Orders tab — items at/below their reorder point
 // ---------------------------------------------------------------------------
 
-function OrdersTab({ items, metricsByItem }) {
+function OrdersTab({ items, metricsByItem, suppliers, supplierById }) {
   const toOrder = items.filter((it) => (metricsByItem[it.id]?.reorderQty || 0) > 0)
 
-  return (
-    <div style={styles.card}>
-      <div style={styles.cardTitle}>To be ordered ({toOrder.length})</div>
-      <div style={styles.tableWrap}>
-      <table style={styles.table}>
-        <thead>
-          <tr>
-            <th style={styles.th}>Item</th>
-            <th style={styles.th}>Theoretical stock</th>
-            <th style={styles.th}>Min</th>
-            <th style={styles.th}>Max</th>
-            <th style={styles.th}>Order qty</th>
-          </tr>
-        </thead>
-        <tbody>
-          {toOrder.map((it) => {
-            const m = metricsByItem[it.id]
-            return (
-              <tr key={it.id}>
-                <td style={styles.td}>{it.name}</td>
-                <td style={styles.tdNum}>{fmt(m.theoreticalClosing, 1)}</td>
-                <td style={styles.tdNum}>{fmt(it.min_units, 0)}</td>
-                <td style={styles.tdNum}>{fmt(it.max_units, 0)}</td>
-                <td style={styles.td}>
-                  <strong>{fmt(m.reorderQty, 0)}</strong>
-                </td>
-              </tr>
-            )
-          })}
-          {toOrder.length === 0 && (
-            <tr>
-              <td style={styles.td} colSpan={5}>
-                Nothing needs ordering right now.
-              </td>
-            </tr>
-          )}
-        </tbody>
-      </table>
+  const groups = useMemo(() => {
+    const map = {}
+    for (const it of toOrder) {
+      const key = it.supplier_id || UNASSIGNED_SUPPLIER
+      ;(map[key] ||= []).push(it)
+    }
+    const rows = Object.entries(map).map(([key, groupItems]) => ({
+      key,
+      supplier: key === UNASSIGNED_SUPPLIER ? null : supplierById[key],
+      items: groupItems,
+    }))
+    rows.sort((a, b) => {
+      if (a.key === UNASSIGNED_SUPPLIER) return 1
+      if (b.key === UNASSIGNED_SUPPLIER) return -1
+      return (a.supplier?.name || '').localeCompare(b.supplier?.name || '')
+    })
+    return rows
+  }, [toOrder, supplierById])
+
+  if (toOrder.length === 0) {
+    return (
+      <div style={styles.card}>
+        <div style={styles.cardTitle}>To be ordered</div>
+        <div style={{ fontSize: 13 }}>Nothing needs ordering right now.</div>
       </div>
-    </div>
+    )
+  }
+
+  return (
+    <>
+      <div style={{ fontSize: 12, color: colors.muted, marginBottom: 4, padding: '0 2px' }}>
+        {toOrder.length} item{toOrder.length === 1 ? '' : 's'} to order, grouped by supplier so each
+        order is ready to send.
+      </div>
+      {groups.map((group) => (
+        <div style={styles.card} key={group.key}>
+          <div style={styles.cardTitle}>
+            {group.supplier ? group.supplier.name : 'Unassigned'} ({group.items.length})
+          </div>
+          {group.supplier && (group.supplier.contact_name || group.supplier.phone || group.supplier.email) && (
+            <div style={{ fontSize: 12, color: colors.muted, marginBottom: 10 }}>
+              {[group.supplier.contact_name, group.supplier.phone, group.supplier.email]
+                .filter(Boolean)
+                .join(' · ')}
+            </div>
+          )}
+          {!group.supplier && (
+            <div style={{ fontSize: 12, color: colors.muted, marginBottom: 10 }}>
+              These items have no supplier linked — set one on the Items tab so they group into an
+              order next time.
+            </div>
+          )}
+          <div style={styles.tableWrap}>
+          <table style={styles.table}>
+            <thead>
+              <tr>
+                <th style={styles.th}>Item</th>
+                <th style={styles.th}>Theoretical stock</th>
+                <th style={styles.th}>Min</th>
+                <th style={styles.th}>Max</th>
+                <th style={styles.th}>Order qty</th>
+              </tr>
+            </thead>
+            <tbody>
+              {group.items.map((it) => {
+                const m = metricsByItem[it.id]
+                return (
+                  <tr key={it.id}>
+                    <td style={styles.td}>{it.name}</td>
+                    <td style={styles.tdNum}>{fmt(m.theoreticalClosing, 1)}</td>
+                    <td style={styles.tdNum}>{fmt(it.min_units, 0)}</td>
+                    <td style={styles.tdNum}>{fmt(it.max_units, 0)}</td>
+                    <td style={styles.td}>
+                      <strong>{fmt(m.reorderQty, 0)}</strong>
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+          </div>
+        </div>
+      ))}
+    </>
   )
 }
