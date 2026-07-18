@@ -2000,7 +2000,41 @@ function VarianceTab({ items, metricsByItem, allClosed, onClosePeriod }) {
 // ---------------------------------------------------------------------------
 
 function OrdersTab({ items, metricsByItem, suppliers, supplierById }) {
+  const [copiedKey, setCopiedKey] = useState(null)
   const toOrder = items.filter((it) => (metricsByItem[it.id]?.reorderQty || 0) > 0)
+
+  async function copyGroup(group) {
+    const text = group.items
+      .map((it) => `${it.name}\t${fmt(metricsByItem[it.id]?.reorderQty, 0)}`)
+      .join('\n')
+
+    const flash = () => {
+      setCopiedKey(group.key)
+      setTimeout(() => setCopiedKey((k) => (k === group.key ? null : k)), 2000)
+    }
+
+    try {
+      await navigator.clipboard.writeText(text)
+      flash()
+    } catch {
+      // Clipboard API can be unavailable (older browsers, non-HTTPS) —
+      // fall back to the old select-and-execCommand trick.
+      const textarea = document.createElement('textarea')
+      textarea.value = text
+      textarea.style.position = 'fixed'
+      textarea.style.opacity = '0'
+      document.body.appendChild(textarea)
+      textarea.focus()
+      textarea.select()
+      try {
+        document.execCommand('copy')
+        flash()
+      } catch {
+        // Nothing more we can do — leave it uncopied silently.
+      }
+      document.body.removeChild(textarea)
+    }
+  }
 
   const groups = useMemo(() => {
     const map = {}
@@ -2038,8 +2072,13 @@ function OrdersTab({ items, metricsByItem, suppliers, supplierById }) {
       </div>
       {groups.map((group) => (
         <div style={styles.card} key={group.key}>
-          <div style={styles.cardTitle}>
-            {group.supplier ? group.supplier.name : 'Unassigned'} ({group.items.length})
+          <div style={{ ...styles.row, justifyContent: 'space-between' }}>
+            <div style={styles.cardTitle}>
+              {group.supplier ? group.supplier.name : 'Unassigned'} ({group.items.length})
+            </div>
+            <button style={styles.buttonGhost} onClick={() => copyGroup(group)}>
+              {copiedKey === group.key ? 'Copied!' : 'Copy list'}
+            </button>
           </div>
           {group.supplier && (group.supplier.contact_name || group.supplier.phone || group.supplier.email) && (
             <div style={{ fontSize: 12, color: colors.muted, marginBottom: 10 }}>
