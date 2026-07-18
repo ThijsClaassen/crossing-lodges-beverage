@@ -969,6 +969,7 @@ function ItemsTab({ items, metricsByItem, location, onAdd, onUpdate, onRemove })
               <th style={styles.th}>Category</th>
               <th style={styles.th}>Tier</th>
               <th style={styles.th}>Unit</th>
+              <th style={styles.th}>Barcode</th>
               <th style={styles.th}>Min</th>
               <th style={styles.th}>Max</th>
               <th style={styles.th}>W/Avg cost</th>
@@ -996,6 +997,15 @@ function ItemsTab({ items, metricsByItem, location, onAdd, onUpdate, onRemove })
                     </select>
                   </td>
                   <td style={styles.td}>{it.count_unit}</td>
+                  <td style={styles.td}>
+                    <input
+                      type="text"
+                      style={{ ...styles.smallInput, width: 130, fontFamily: fonts.mono }}
+                      defaultValue={it.barcode || ''}
+                      placeholder="unlinked"
+                      onBlur={(e) => updateItem(it.id, { barcode: e.target.value.trim() || null })}
+                    />
+                  </td>
                   <td style={styles.td}>
                     <input
                       type="number"

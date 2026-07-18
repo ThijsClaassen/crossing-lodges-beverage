@@ -10,13 +10,12 @@ import { colors, fonts } from './theme.js'
 
 export default function BarcodeScanner({ onScan, onClose }) {
   const videoRef = useRef(null)
-  const readerRef = useRef(null)
+  const controlsRef = useRef(null)
   const lastScanRef = useRef({ code: '', time: 0 })
   const [error, setError] = useState('')
 
   useEffect(() => {
     const reader = new BrowserMultiFormatReader()
-    readerRef.current = reader
     let cancelled = false
 
     reader
@@ -32,16 +31,30 @@ export default function BarcodeScanner({ onScan, onClose }) {
           // doesn't fire the callback dozens of times.
           if (code === lastScanRef.current.code && now - lastScanRef.current.time < 2000) return
           lastScanRef.current = { code, time: now }
+          // Stop the camera/decode loop BEFORE telling the parent about the
+          // scan. The parent responds by closing this overlay, which
+          // unmounts this component — if the decoder is still mid-frame
+          // when that happens, it can throw trying to read a video element
+          // that's already gone, which crashed the whole app to a blank
+          // white screen. Stopping first avoids that race entirely.
+          controlsRef.current?.stop()
           onScan(code)
         }
       )
+      .then((controls) => {
+        if (cancelled) {
+          controls.stop()
+        } else {
+          controlsRef.current = controls
+        }
+      })
       .catch((err) => {
         if (!cancelled) setError(err?.message || 'Could not access the camera.')
       })
 
     return () => {
       cancelled = true
-      reader.reset()
+      controlsRef.current?.stop()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
