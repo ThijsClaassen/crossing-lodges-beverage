@@ -63,6 +63,16 @@ function computeMetrics(item, stockPeriod, itemPurchases, itemIssues) {
       ? Math.max(Number(item.max_units || 0) - theoreticalClosing, 0)
       : 0
 
+  // You don't always order in the same unit you count in — a spirit is
+  // counted in ml (tots remaining) but ordered by the 750ml/1L bottle; a
+  // Coke is counted "ea" but ordered by the six-pack. order_pack_size is
+  // how many count_units make up one orderable pack (defaults to 1, i.e.
+  // no rounding — order in the same unit you count in, today's behaviour).
+  // Round UP to whole packs so you never under-order.
+  const orderPackSize = Number(item.order_pack_size) > 0 ? Number(item.order_pack_size) : 1
+  const orderPacks = reorderQty > 0 ? Math.ceil(reorderQty / orderPackSize) : 0
+  const orderRoundedQty = orderPacks * orderPackSize
+
   return {
     opening,
     openingCost,
@@ -80,6 +90,9 @@ function computeMetrics(item, stockPeriod, itemPurchases, itemIssues) {
     varianceUnits,
     varianceValue,
     reorderQty,
+    orderPackSize,
+    orderPacks,
+    orderRoundedQty,
   }
 }
 
@@ -1041,13 +1054,21 @@ function ItemsTab({ items, metricsByItem, location, suppliers, onAdd, onUpdate, 
     supplier_id: '',
     min_units: 24,
     max_units: 72,
+    order_pack_size: 1,
+    order_pack_label: '',
   })
   const [saving, setSaving] = useState(false)
 
   async function addItem() {
     if (!form.name.trim()) return
     setSaving(true)
-    const [row] = await sb.insert('bev_items', { ...form, supplier_id: form.supplier_id || null, location_id: location })
+    const [row] = await sb.insert('bev_items', {
+      ...form,
+      order_pack_size: Number(form.order_pack_size) || 1,
+      order_pack_label: form.order_pack_label.trim() || null,
+      supplier_id: form.supplier_id || null,
+      location_id: location,
+    })
     setForm({
       name: '',
       category: 'Beer',
@@ -1056,6 +1077,8 @@ function ItemsTab({ items, metricsByItem, location, suppliers, onAdd, onUpdate, 
       supplier_id: '',
       min_units: 24,
       max_units: 72,
+      order_pack_size: 1,
+      order_pack_label: '',
     })
     setSaving(false)
     onAdd(row)
@@ -1085,8 +1108,26 @@ function ItemsTab({ items, metricsByItem, location, suppliers, onAdd, onUpdate, 
             <input style={styles.input} value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })} />
           </div>
           <div>
-            <label style={styles.label}>Unit</label>
+            <label style={styles.label}>Count/serving unit</label>
             <input style={styles.input} value={form.count_unit} onChange={(e) => setForm({ ...form, count_unit: e.target.value })} />
+          </div>
+          <div>
+            <label style={styles.label}>Order pack size</label>
+            <input
+              type="number"
+              style={styles.input}
+              value={form.order_pack_size}
+              onChange={(e) => setForm({ ...form, order_pack_size: e.target.value })}
+            />
+          </div>
+          <div>
+            <label style={styles.label}>Order pack label</label>
+            <input
+              style={styles.input}
+              placeholder="e.g. 750ml bottle, 6-pack"
+              value={form.order_pack_label}
+              onChange={(e) => setForm({ ...form, order_pack_label: e.target.value })}
+            />
           </div>
           <div>
             <label style={styles.label}>Pricing tier</label>
@@ -1133,6 +1174,12 @@ function ItemsTab({ items, metricsByItem, location, suppliers, onAdd, onUpdate, 
             />
           </div>
         </div>
+        <div style={{ fontSize: 12, color: colors.muted, marginTop: 8 }}>
+          Count/serving unit is how you count stock (e.g. "ml" for spirits measured by the tot, "ea"
+          for cans/bottles). Order pack size is how many of that unit make up one thing you order —
+          e.g. 750 (ml) for a 750ml bottle, 6 (ea) for a six-pack. Leave it at 1 if you order in the
+          same unit you count in. Orders round up to whole packs so you never under-order.
+        </div>
         <button style={styles.button} onClick={addItem} disabled={saving}>
           {saving ? 'Adding…' : 'Add item'}
         </button>
@@ -1152,6 +1199,8 @@ function ItemsTab({ items, metricsByItem, location, suppliers, onAdd, onUpdate, 
               <th style={styles.th}>Barcode</th>
               <th style={styles.th}>Min</th>
               <th style={styles.th}>Max</th>
+              <th style={styles.th}>Pack size</th>
+              <th style={styles.th}>Pack label</th>
               <th style={styles.th}>W/Avg cost</th>
               <th style={styles.th}>Stock value</th>
               <th style={styles.th}></th>
@@ -1214,6 +1263,23 @@ function ItemsTab({ items, metricsByItem, location, suppliers, onAdd, onUpdate, 
                       style={styles.smallInput}
                       defaultValue={it.max_units}
                       onBlur={(e) => updateItem(it.id, { max_units: Number(e.target.value) })}
+                    />
+                  </td>
+                  <td style={styles.td}>
+                    <input
+                      type="number"
+                      style={{ ...styles.smallInput, width: 70 }}
+                      defaultValue={it.order_pack_size ?? 1}
+                      onBlur={(e) => updateItem(it.id, { order_pack_size: Number(e.target.value) || 1 })}
+                    />
+                  </td>
+                  <td style={styles.td}>
+                    <input
+                      type="text"
+                      style={{ ...styles.smallInput, width: 130 }}
+                      defaultValue={it.order_pack_label || ''}
+                      placeholder="e.g. 750ml bottle"
+                      onBlur={(e) => updateItem(it.id, { order_pack_label: e.target.value.trim() || null })}
                     />
                   </td>
                   <td style={styles.tdNum}>{m ? `R ${fmt(m.weightedAvgCost)}` : '—'}</td>
@@ -1999,13 +2065,24 @@ function VarianceTab({ items, metricsByItem, allClosed, onClosePeriod }) {
 // Orders tab — items at/below their reorder point
 // ---------------------------------------------------------------------------
 
+// How to describe one order pack for an item — the label you typed in,
+// or a sensible fallback built from the pack size and count unit.
+function packLabel(item) {
+  if (item.order_pack_label) return item.order_pack_label
+  if (Number(item.order_pack_size) > 1) return `${fmt(item.order_pack_size, 0)} ${item.count_unit}`
+  return item.count_unit || 'unit'
+}
+
 function OrdersTab({ items, metricsByItem, suppliers, supplierById }) {
   const [copiedKey, setCopiedKey] = useState(null)
   const toOrder = items.filter((it) => (metricsByItem[it.id]?.reorderQty || 0) > 0)
 
   async function copyGroup(group) {
     const text = group.items
-      .map((it) => `${it.name}\t${fmt(metricsByItem[it.id]?.reorderQty, 0)}`)
+      .map((it) => {
+        const m = metricsByItem[it.id]
+        return `${it.name}\t${fmt(m?.orderPacks, 0)} x ${packLabel(it)}`
+      })
       .join('\n')
 
     const flash = () => {
@@ -2068,7 +2145,8 @@ function OrdersTab({ items, metricsByItem, suppliers, supplierById }) {
     <>
       <div style={{ fontSize: 12, color: colors.muted, marginBottom: 4, padding: '0 2px' }}>
         {toOrder.length} item{toOrder.length === 1 ? '' : 's'} to order, grouped by supplier so each
-        order is ready to send.
+        order is ready to send. Quantities are rounded up to whole order packs (bottles, six-packs,
+        cases — whatever's set on the Items tab) so you never under-order.
       </div>
       {groups.map((group) => (
         <div style={styles.card} key={group.key}>
@@ -2101,7 +2179,8 @@ function OrdersTab({ items, metricsByItem, suppliers, supplierById }) {
                 <th style={styles.th}>Theoretical stock</th>
                 <th style={styles.th}>Min</th>
                 <th style={styles.th}>Max</th>
-                <th style={styles.th}>Order qty</th>
+                <th style={styles.th}>Need</th>
+                <th style={styles.th}>Order</th>
               </tr>
             </thead>
             <tbody>
@@ -2113,8 +2192,18 @@ function OrdersTab({ items, metricsByItem, suppliers, supplierById }) {
                     <td style={styles.tdNum}>{fmt(m.theoreticalClosing, 1)}</td>
                     <td style={styles.tdNum}>{fmt(it.min_units, 0)}</td>
                     <td style={styles.tdNum}>{fmt(it.max_units, 0)}</td>
+                    <td style={styles.tdNum}>
+                      {fmt(m.reorderQty, 0)} {it.count_unit}
+                    </td>
                     <td style={styles.td}>
-                      <strong>{fmt(m.reorderQty, 0)}</strong>
+                      <strong>
+                        {fmt(m.orderPacks, 0)} x {packLabel(it)}
+                      </strong>
+                      {m.orderPackSize > 1 && (
+                        <div style={{ fontSize: 11, color: colors.muted }}>
+                          = {fmt(m.orderRoundedQty, 0)} {it.count_unit}
+                        </div>
+                      )}
                     </td>
                   </tr>
                 )
