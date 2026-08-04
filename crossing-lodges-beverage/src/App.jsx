@@ -102,7 +102,12 @@ function computeMetrics(item, stockPeriod, itemPurchases, itemIssues) {
 // items that haven't been counted yet — so the total is always complete.
 function aggregateValues(items, metricsByItem) {
   const blank = () => ({ theoreticalValue: 0, actualValue: 0, varianceValue: 0, issuedValue: 0 })
-  const totals = { ...blank(), byTier: { Included: blank(), Premium: blank() } }
+  const totals = {
+    ...blank(),
+    byTier: { Included: blank(), Premium: blank() },
+    writeOffUnits: 0,
+    writeOffValue: 0,
+  }
 
   for (const it of items) {
     const m = metricsByItem[it.id]
@@ -117,6 +122,8 @@ function aggregateValues(items, metricsByItem) {
     totals.actualValue += actualValue
     totals.varianceValue += varianceValue
     totals.issuedValue += issuedValue
+    totals.writeOffUnits += m.writeOffUnits
+    totals.writeOffValue += m.writeOffValue
 
     totals.byTier[tier].theoreticalValue += theoreticalValue
     totals.byTier[tier].actualValue += actualValue
@@ -769,6 +776,7 @@ export default function App() {
               <PurchasesTab
                 items={items}
                 purchases={purchases}
+                suppliers={suppliers}
                 location={location}
                 period={period}
                 onAdd={addLocalPurchase}
@@ -916,6 +924,21 @@ function DashboardTab({ items, metricsByItem, period, suppliers, supplierById })
           Rand value gap between what the books say should be on the shelf and what was actually
           counted (negative means stock is missing). Items not yet counted fall back to the
           theoretical estimate in both columns, so the totals stay complete.
+        </div>
+      </div>
+
+      <div style={styles.card}>
+        <div style={styles.cardTitle}>Write-offs / breakages — {period}</div>
+        <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, flexWrap: 'wrap' }}>
+          <span style={{ fontSize: 30, fontWeight: 700, fontFamily: fonts.mono, color: colors.danger }}>
+            {fmt(totals.writeOffUnits, 0)}
+          </span>
+          <span style={{ fontSize: 13, color: colors.muted }}>units written off — R {fmt(totals.writeOffValue)}</span>
+        </div>
+        <div style={{ fontSize: 12, color: colors.muted, marginTop: 6 }}>
+          Total across every reason other than Service (breakage, expired, staff, other) logged on
+          the Issues tab this period. See the Issues tab or the By-supplier table below for the
+          breakdown.
         </div>
       </div>
 
@@ -1519,7 +1542,7 @@ function SuppliersTab({ suppliers, location, onAdd, onUpdate, onRemove }) {
 // Purchases tab
 // ---------------------------------------------------------------------------
 
-function PurchasesTab({ items, purchases, location, period, onAdd, onRemove }) {
+function PurchasesTab({ items, purchases, suppliers, location, period, onAdd, onRemove }) {
   const [form, setForm] = useState({
     item_id: items[0]?.id || '',
     date: new Date().toISOString().slice(0, 10),
@@ -1592,9 +1615,21 @@ function PurchasesTab({ items, purchases, location, period, onAdd, onRemove }) {
           </div>
           <div>
             <label style={styles.label}>Supplier</label>
-            <input style={styles.input} value={form.supplier} onChange={(e) => setForm({ ...form, supplier: e.target.value })} />
+            <select style={styles.input} value={form.supplier} onChange={(e) => setForm({ ...form, supplier: e.target.value })}>
+              <option value="">Select supplier…</option>
+              {suppliers.map((s) => (
+                <option key={s.id} value={s.name}>
+                  {s.name}
+                </option>
+              ))}
+            </select>
           </div>
         </div>
+        {suppliers.length === 0 && (
+          <div style={{ fontSize: 12, color: colors.muted, marginBottom: 8 }}>
+            No suppliers set up yet for this lodge — add them on the Suppliers tab first.
+          </div>
+        )}
         <button style={styles.button} onClick={addPurchase} disabled={saving}>
           {saving ? 'Saving…' : 'Add purchase'}
         </button>
