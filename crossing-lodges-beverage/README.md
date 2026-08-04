@@ -22,9 +22,51 @@ v2 adds:
   vs Premium, and lists of the fastest-moving and completely non-moving
   items this period to inform menu decisions.
 
+Since v2, the app also picked up: barcode scanning on the Count tab (see
+"Count tab: Scan mode" below), a Submit-and-clear workflow for counts (see
+"Count tab: Submit & clear"), and now:
+
+- **Suppliers** (Admin only, one list per lodge) — link each item to a
+  supplier on the Items tab.
+- **Write-off reasons on issues** — every issue is now logged as `Service`
+  (normal guest consumption, the default) or a write-off reason: `Breakage`,
+  `Expired`, `Staff`, `Other`.
+- **Dashboard "By supplier"** — stock value, movement (Service qty/value),
+  and write-offs (qty/value) rolled up per supplier, so you can see which
+  supplier's products are moving, which are getting written off, and how
+  much stock value sits with each one.
+- **Orders grouped by supplier** — the reorder list is now broken into one
+  section per supplier (with contact details shown if you've added them),
+  so each supplier's order is ready to send as its own list. Items with no
+  supplier linked land in an "Unassigned" group at the end. Each group has
+  a **Copy list** button that copies just item name + order quantity (one
+  per line, tab-separated) to the clipboard, ready to paste straight into
+  an email, WhatsApp message, or spreadsheet to send to that supplier.
+- **Order pack rounding** — you count stock in whatever unit makes sense
+  (ml for spirits measured by the tot, "ea" for cans/bottles) but you don't
+  always order in that same unit — a spirit is bought by the 750ml/1L
+  bottle, a Coke by the six-pack. Each item now has an **order pack size**
+  (how many count_units make up one orderable pack) and an optional
+  **order pack label** (e.g. "750ml bottle", "6-pack") set on the Items
+  tab. The Orders tab and its Copy list rounds the raw shortfall UP to
+  whole packs, so a supplier order never asks for a fraction of a bottle
+  or a partial six-pack. Leave pack size at 1 (the default) for any item
+  you order in the same unit you count in — nothing changes for those.
+- **Purchases tab: supplier as a dropdown** — the Supplier field when
+  logging a purchase now picks from the same supplier list used elsewhere
+  in the app (Items, Suppliers, Orders tabs), instead of a free-text box.
+  Keeps supplier names spelled consistently everywhere they show up,
+  instead of "Coca-Cola", "coca cola", "CocaCola" all being different
+  strings. If you haven't added suppliers yet for a lodge, the dropdown
+  will be empty — add them on the Suppliers tab first.
+- **Dashboard write-off total** — a single, at-a-glance number for total
+  units written off this period (breakage, expired, staff, other — see
+  "By supplier" for a per-supplier breakdown, or the Issues tab for the
+  full per-entry log).
+
 Per-cost-centre issue tracking (matching the old Excel sheet's Kitchen /
-Guest Group breakdown) remains a deliberately deferred v3 — see "What's
-next" below.
+Guest Group breakdown) remains a deliberately deferred feature — see
+"What's next" below.
 
 ## 1. Database setup
 
@@ -39,6 +81,19 @@ easy (single database, no API integration layer needed).
 `supabase/migration_v2.sql` once — it's safe to run on the live database and
 adds the `pricing_tier` column and the `bev_access` login table without
 touching your existing data.
+
+**Already on v2 (have `bev_access`)?** Just run `supabase/migration_v3.sql`
+— adds the `barcode` column used by Scan mode. Also safe to run on the live
+database.
+
+**Already on v3 (have `barcode`)?** Just run `supabase/migration_v4.sql` —
+adds the `bev_suppliers` table, links items to suppliers, and adds the
+`reason` column on issues. Also safe to run on the live database.
+
+**Already on v4 (have `bev_suppliers`)?** Just run
+`supabase/migration_v5.sql` — adds `order_pack_size` (default 1, so nothing
+changes until you set it) and `order_pack_label` to `bev_items`. Also safe
+to run on the live database.
 
 **Fresh install:**
 
@@ -79,8 +134,21 @@ that ever matters (e.g. real audit trails, stricter data protection), the
 fix is moving to Supabase Auth with individual logins — a bigger change,
 flagged here so it's a deliberate choice, not a surprise.
 
-Staff sees: Purchases, Issues, Count, Orders.
-Admin sees: all of the above, plus Items, Variance, and Dashboard.
+Staff sees: Issues, Count. On Count, Staff only sees the Item and Counted
+columns — Theoretical and Variance are hidden so a count isn't unconsciously
+anchored to what the books say should be there.
+Admin sees everything: Dashboard, Items, Suppliers, Opening, Purchases,
+Issues, Count (with Theoretical/Variance visible), Variance, and Orders.
+
+## Correcting opening stock / cost
+
+There's no editable "cost" field on an item itself — cost is always derived
+from opening cost per unit + logged purchases (weighted average). The
+**Opening** tab (Admin only) is where you set or correct opening units and
+opening cost per unit for the current period — needed especially for your
+very first month, where "Start period" has nothing to carry forward from and
+defaults everything to 0. Run "Start {period}" first (see the banner), then
+each item becomes editable in the Opening tab.
 
 ## 2. Connect the app to your project
 
@@ -115,6 +183,77 @@ required if you baked the credentials into `sb.js`; otherwise add
 The app is a PWA (`public/manifest.webmanifest` is included) — add real
 icons to `/public` the same way the ops app does if you want a proper
 "Add to Home Screen" icon; it'll work without them, just with a default one.
+
+## Count tab: Scan mode
+
+Click **Scan barcode** to open the camera and read standard 1D barcodes
+(UPC/EAN — the kind printed on bottles and cans). Scanning a barcode
+that's already linked to an item jumps straight to that item's count field,
+highlighted, ready to type. Scanning an unrecognized barcode shows a small
+"link it to an item" prompt — pick the matching item once, and every future
+scan of that same bottle recognizes it instantly (no external barcode
+database involved; this is your own data, so it's free and works offline
+once linked). After typing a count, press **Enter** to save that keystroke
+and reopen the camera for the next scan.
+
+Only items with real packaging (beers, ciders, soft drinks, spirits, most
+wines) have a barcode to scan — poured items like tots, cocktails, and
+glasses of wine don't, and stay in the regular manually-typed list.
+
+Requires HTTPS (Vercel provides this) and a one-time camera permission
+prompt in the browser. Uses `@zxing/browser` for the actual barcode
+decoding — added to `package.json`, so `npm install` picks it up.
+
+You don't have to scan to link a barcode — the **Items** tab (Admin) has a
+Barcode column you can type into directly, if you'd rather enter numbers by
+hand (e.g. from a spreadsheet) than physically scan every bottle.
+
+A camera-loop race condition that crashed the app to a blank white screen
+right after scanning has been fixed (the decoder is now stopped before the
+scan overlay closes, instead of racing with it). An error boundary was also
+added in `main.jsx` as a general safety net — if anything else ever throws
+an uncaught error, you'll get a "Something went wrong / Reload" screen
+instead of a silent blank page, which makes any future issue much easier to
+report and debug.
+
+## Count tab: Submit & clear
+
+The Count tab no longer auto-saves field-by-field. Fields start empty every
+time (the grey number in the box is just a reminder of the last saved
+count, not a live value) — fill in what you're counting, hit **Submit
+count**, and everything filled in saves in one batch while the sheet clears
+itself, ready for the next round (e.g. next week's count). Anything left
+blank when you submit is simply skipped and keeps its last saved value —
+nothing gets overwritten with zero.
+
+## Fast data entry
+
+Saving a single field (a count, an opening value, an item edit) updates
+that row directly in local state from what the server returned — it no
+longer re-fetches everything and briefly blanks the screen behind a
+"Loading…" placeholder. That full reload only happens when switching lodge
+or period, or right after "Start period" / "Close period" (which touch
+every item's row at once). This matches the "write back optimistically"
+approach the ops app already uses.
+
+## Responsive layout
+
+Tables scroll horizontally within their own card on narrow screens instead
+of breaking the page layout, the bottom nav scrolls sideways instead of
+squeezing every tab into an unreadable sliver on phones, and the desktop
+content area is wider to make better use of laptop screens.
+
+## Branding
+
+The app now uses the shared Crossing Lodges colour palette and fonts (Inter
+for UI text, Cormorant Garamond for headings, Space Mono for numeric
+values) — same tokens as the ops app.
+
+**Logo:** drop your logo file into `public/logo.png` (exact filename
+matters — the header, login screen, favicon, and PWA icon all reference
+that path). Until that file exists, the app just quietly hides the broken
+image rather than showing a broken-image icon, so nothing looks off in the
+meantime.
 
 ## How the data model maps to the old Excel sheet
 
