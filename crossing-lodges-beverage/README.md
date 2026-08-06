@@ -327,9 +327,16 @@ approach the ops app already uses.
 ## Responsive layout
 
 Tables scroll horizontally within their own card on narrow screens instead
-of breaking the page layout, the bottom nav scrolls sideways instead of
-squeezing every tab into an unreadable sliver on phones, and the desktop
-content area is wider to make better use of laptop screens.
+of breaking the page layout, and the desktop content area is wider to make
+better use of laptop screens.
+
+**Bottom nav is a single "Menu" button**, not a row of tabs. With up to 9
+tabs on the Admin role, a horizontal-scroll bar either clipped tabs off
+the edge of the screen or needed a swipe gesture nobody discovered on
+their own — on a phone, several tabs were simply unreachable. Tapping the
+Menu button now opens a bottom sheet listing every tab for the current
+role, with the current one highlighted; tap one to switch and the sheet
+closes. This scales cleanly no matter how many tabs get added later.
 
 ## Branding
 
