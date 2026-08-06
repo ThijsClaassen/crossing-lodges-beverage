@@ -9,6 +9,24 @@
 create extension if not exists "pgcrypto";
 
 -- ---------------------------------------------------------------------------
+-- bev_suppliers — one supplier list per lodge (fully separate, same pattern
+-- as items). Referenced by bev_items, so it's created first.
+-- ---------------------------------------------------------------------------
+create table if not exists bev_suppliers (
+  id            uuid primary key default gen_random_uuid(),
+  location_id   text not null check (location_id in ('ZC', 'EC', 'SC')),
+  name          text not null,
+  contact_name  text,
+  phone         text,
+  email         text,
+  notes         text,
+  active        boolean not null default true,
+  created_at    timestamptz not null default now()
+);
+
+create index if not exists idx_bev_suppliers_location on bev_suppliers(location_id);
+
+-- ---------------------------------------------------------------------------
 -- bev_items — master beverage list. Item lists are FULLY SEPARATE per lodge
 -- (unlike the shared `fleet` table in the ops app), so location_id lives here.
 -- ---------------------------------------------------------------------------
@@ -21,16 +39,25 @@ create table if not exists bev_items (
   count_unit        text not null default 'ea',       -- 'ea', 'ltr', 'tot', etc.
   pricing_tier      text not null default 'Included'  -- 'Included' (all-inclusive) or 'Premium'
                       check (pricing_tier in ('Included', 'Premium')),
+  barcode           text,                              -- UPC/EAN, linked via the Count tab's Scan mode
+  supplier_id       uuid references bev_suppliers(id) on delete set null,
   storeroom         text,                              -- e.g. 'A', 'B'
   shelf             text,                              -- e.g. 'Top', 'Middle', 'Bottom'
   shelf_position    text,                              -- e.g. 'Front', 'Back'
   min_units         numeric not null default 0,        -- reorder trigger point
   max_units         numeric not null default 0,        -- reorder target level
+  order_pack_size   numeric not null default 1,        -- how many count_units per orderable
+                                                          -- pack, e.g. 750 (ml) for a bottle,
+                                                          -- 6 (ea) for a six-pack. 1 = order in
+                                                          -- the same unit you count in.
+  order_pack_label  text,                                -- e.g. '750ml bottle', '6-pack'
   active            boolean not null default true,
   created_at        timestamptz not null default now()
 );
 
 create index if not exists idx_bev_items_location on bev_items(location_id);
+create index if not exists idx_bev_items_barcode on bev_items(location_id, barcode);
+create index if not exists idx_bev_items_supplier on bev_items(supplier_id);
 
 -- ---------------------------------------------------------------------------
 -- bev_stock_periods — one row per item per location per period (e.g. '2026-07').
@@ -85,6 +112,9 @@ create table if not exists bev_issues (
   period        text not null,                 -- 'YYYY-MM', derived from date at entry time
   date          date not null,
   qty           numeric not null default 0,
+  reason        text not null default 'Service', -- 'Service' (normal consumption), 'Breakage',
+                                                   -- 'Expired', 'Staff', 'Other' — plain text on
+                                                   -- purpose, options live in the app's dropdown
   note          text,
   created_at    timestamptz not null default now()
 );
@@ -111,6 +141,7 @@ alter table bev_stock_periods  enable row level security;
 alter table bev_purchases      enable row level security;
 alter table bev_issues         enable row level security;
 alter table bev_access         enable row level security;
+alter table bev_suppliers      enable row level security;
 
 create policy allow_all_bev_items on bev_items
   for all using (true) with check (true);
@@ -119,6 +150,8 @@ create policy allow_all_bev_stock_periods on bev_stock_periods
 create policy allow_all_bev_purchases on bev_purchases
   for all using (true) with check (true);
 create policy allow_all_bev_issues on bev_issues
+  for all using (true) with check (true);
+create policy allow_all_bev_suppliers on bev_suppliers
   for all using (true) with check (true);
 -- bev_access only ever needs to be READ by the app (to check a password);
 -- it's never written to from the client. Change passwords via the Table
@@ -138,6 +171,7 @@ grant select, insert, update, delete on public.bev_items          to anon, authe
 grant select, insert, update, delete on public.bev_stock_periods  to anon, authenticated;
 grant select, insert, update, delete on public.bev_purchases      to anon, authenticated;
 grant select, insert, update, delete on public.bev_issues         to anon, authenticated;
+grant select, insert, update, delete on public.bev_suppliers      to anon, authenticated;
 grant select on public.bev_access to anon, authenticated;
 
 -- Default Admin/Staff passwords — CHANGE THESE immediately via the Table
