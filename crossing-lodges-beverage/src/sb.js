@@ -9,17 +9,24 @@
 // VITE_SUPABASE_ANON_KEY) — either works, env vars are just easier to keep
 // out of source control.
 
-const SUPABASE_URL =
-  import.meta.env.VITE_SUPABASE_URL || 'https://arrendpmuwdhrfwvokhv.supabase.co'
-const SUPABASE_ANON_KEY =
-  import.meta.env.VITE_SUPABASE_ANON_KEY || 'sb_publishable_e5hLLlXWBVV8NkNUAz3Blg_8oMwP3Wt'
+import { supabase, SUPABASE_URL, SUPABASE_ANON_KEY } from './supabaseClient.js'
 
 const REST = `${SUPABASE_URL}/rest/v1`
 
-function headers(extra = {}) {
+// Made async in the multi-tenant migration (Beverage Stock 3b, 2026-08-09) —
+// every request now carries the logged-in user's session access token
+// instead of just the anon key, which is what RLS's has_company_access()
+// needs to identify the caller. Every call site below was updated to
+// `await headers(...)` at the same time (see [[feedback-git-and-async-gotchas]]
+// for why that matters — a missed await here is syntactically valid and
+// parses clean, but silently sends no Authorization header at all).
+async function headers(extra = {}) {
+  const {
+    data: { session },
+  } = await supabase.auth.getSession()
   return {
     apikey: SUPABASE_ANON_KEY,
-    Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+    Authorization: `Bearer ${session?.access_token || SUPABASE_ANON_KEY}`,
     'Content-Type': 'application/json',
     ...extra,
   }
@@ -51,7 +58,7 @@ export const sb = {
     if (opts.select) params.select = opts.select
     if (opts.order) params.order = opts.order
     const res = await fetch(`${REST}/${table}${qs(params)}`, {
-      headers: headers(),
+      headers: await headers(),
     })
     return handle(res)
   },
@@ -59,7 +66,7 @@ export const sb = {
   async insert(table, rows) {
     const res = await fetch(`${REST}/${table}`, {
       method: 'POST',
-      headers: headers({ Prefer: 'return=representation' }),
+      headers: await headers({ Prefer: 'return=representation' }),
       body: JSON.stringify(Array.isArray(rows) ? rows : [rows]),
     })
     return handle(res)
@@ -71,7 +78,7 @@ export const sb = {
       `${REST}/${table}?on_conflict=${encodeURIComponent(onConflict)}`,
       {
         method: 'POST',
-        headers: headers({
+        headers: await headers({
           Prefer: 'resolution=merge-duplicates,return=representation',
         }),
         body: JSON.stringify(Array.isArray(rows) ? rows : [rows]),
@@ -83,7 +90,7 @@ export const sb = {
   async update(table, filters, patch) {
     const res = await fetch(`${REST}/${table}${qs(filters)}`, {
       method: 'PATCH',
-      headers: headers({ Prefer: 'return=representation' }),
+      headers: await headers({ Prefer: 'return=representation' }),
       body: JSON.stringify(patch),
     })
     return handle(res)
@@ -92,7 +99,7 @@ export const sb = {
   async remove(table, filters) {
     const res = await fetch(`${REST}/${table}${qs(filters)}`, {
       method: 'DELETE',
-      headers: headers({ Prefer: 'return=representation' }),
+      headers: await headers({ Prefer: 'return=representation' }),
     })
     return handle(res)
   },

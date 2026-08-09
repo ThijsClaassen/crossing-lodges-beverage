@@ -2,6 +2,52 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { sb, LOCATIONS, currentPeriod } from './sb.js'
 import { colors, fonts } from './theme.js'
 import BarcodeScanner from './BarcodeScanner.jsx'
+import { supabase } from './supabaseClient.js'
+import Login from './Login.jsx'
+import SetPassword from './SetPassword.jsx'
+import { CompanyProvider, useCompany } from './CompanyContext.jsx'
+
+// ---------------------------------------------------------------------------
+// Auth helpers — real Supabase Auth replaces the old shared staff/admin
+// password checked against bev_access (2026-08-09, Beverage Stock 3b of the
+// multi-tenant rebuild). bev_access is deliberately left in the schema,
+// unused by this app from here on.
+//
+// Supabase's invite/recovery links land back here with a #type=invite or
+// #type=recovery hash fragment — read once, synchronously, on first render,
+// before supabase-js has a chance to process and clear it.
+// ---------------------------------------------------------------------------
+function getAuthHashType() {
+  if (typeof window === 'undefined' || !window.location.hash) return null
+  return new URLSearchParams(window.location.hash.slice(1)).get('type')
+}
+
+function AuthMessageScreen({ children }) {
+  return (
+    <div
+      style={{
+        fontFamily: fonts.body,
+        background: colors.bg,
+        minHeight: '100vh',
+        color: colors.cream,
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        justifyContent: 'center',
+        padding: 24,
+        textAlign: 'center',
+      }}
+    >
+      <img
+        src="/logo.png"
+        alt=""
+        style={{ height: 56, width: 'auto', display: 'block', marginBottom: 16 }}
+        onError={(e) => (e.target.style.display = 'none')}
+      />
+      <div style={{ maxWidth: 320 }}>{children}</div>
+    </div>
+  )
+}
 
 // ---------------------------------------------------------------------------
 // Small helpers
@@ -549,89 +595,63 @@ const STAFF_TABS = [
 // App
 // ---------------------------------------------------------------------------
 
-function useAuth() {
-  const [role, setRole] = useState(() => {
-    try {
-      return localStorage.getItem('bev_role') || null
-    } catch {
-      return null
-    }
+// ─── ROOT APP ────────────────────────────────────────────────────────────────
+export default function App() {
+  // undefined = still checking for an existing session, null = signed out
+  const [session, setSession] = useState(undefined)
+  const [needsPasswordSetup, setNeedsPasswordSetup] = useState(() => {
+    const type = getAuthHashType()
+    return type === 'invite' || type === 'recovery'
   })
 
-  function login(r) {
-    try {
-      localStorage.setItem('bev_role', r)
-    } catch {
-      /* ignore storage errors */
-    }
-    setRole(r)
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data }) => setSession(data.session))
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, newSession) => {
+      setSession(newSession)
+    })
+    return () => subscription.unsubscribe()
+  }, [])
+
+  if (session === undefined) {
+    return (
+      <AuthMessageScreen>
+        <p>Loading…</p>
+      </AuthMessageScreen>
+    )
   }
 
-  function logout() {
-    try {
-      localStorage.removeItem('bev_role')
-    } catch {
-      /* ignore storage errors */
-    }
-    setRole(null)
+  if (!session) {
+    return <Login />
   }
 
-  return { role, login, logout }
-}
-
-function LoginScreen({ onLogin }) {
-  const [password, setPassword] = useState('')
-  const [error, setError] = useState('')
-  const [checking, setChecking] = useState(false)
-
-  async function submit(e) {
-    e.preventDefault()
-    if (!password) return
-    setChecking(true)
-    setError('')
-    try {
-      const rows = await sb.select('bev_access', { password })
-      if (rows && rows.length) {
-        onLogin(rows[0].role)
-      } else {
-        setError('Incorrect password.')
-      }
-    } catch (err) {
-      setError(`Could not reach the database: ${err.message}`)
-    } finally {
-      setChecking(false)
-    }
+  if (needsPasswordSetup) {
+    return <SetPassword onDone={() => setNeedsPasswordSetup(false)} />
   }
 
+  // key forces CompanyProvider to reload from scratch if a different user
+  // signs in without a full page refresh.
   return (
-    <div style={{ ...styles.app, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-      <form onSubmit={submit} style={{ ...styles.card, width: 280 }}>
-        <img
-          src="/logo.png"
-          alt=""
-          style={{ height: 56, width: 'auto', display: 'block', margin: '0 auto 12px' }}
-          onError={(e) => (e.target.style.display = 'none')}
-        />
-        <div style={{ ...styles.cardTitle, textAlign: 'center' }}>Crossing Lodges — Beverage Stock</div>
-        <label style={styles.label}>Password</label>
-        <input
-          type="password"
-          autoFocus
-          style={styles.input}
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-        />
-        {error && <div style={{ color: colors.danger, fontSize: 12, marginTop: 8 }}>{error}</div>}
-        <button type="submit" style={{ ...styles.button, width: '100%', marginTop: 12 }} disabled={checking}>
-          {checking ? 'Checking…' : 'Log in'}
-        </button>
-      </form>
-    </div>
+    <CompanyProvider key={session.user.id}>
+      <AuthenticatedApp />
+    </CompanyProvider>
   )
 }
 
-export default function App() {
-  const { role, login, logout } = useAuth()
+function AuthenticatedApp() {
+  const {
+    loading: companyLoading,
+    error: companyError,
+    availableCompanies,
+    companyId,
+    companyName,
+    role,
+    switchCompany,
+  } = useCompany()
+  async function logout() {
+    await supabase.auth.signOut()
+  }
   const [location, setLocation] = useState('ZC')
   const [period, setPeriod] = useState(currentPeriod())
   const [tab, setTab] = useState('dashboard')
@@ -645,15 +665,16 @@ export default function App() {
   const [error, setError] = useState(null)
 
   async function loadAll() {
+    if (!companyId) return
     setLoading(true)
     setError(null)
     try {
       const [itemsRes, spRes, purRes, issRes, supRes] = await Promise.all([
-        sb.select('bev_items', { location_id: location, active: true }, { order: 'category.asc,name.asc' }),
-        sb.select('bev_stock_periods', { location_id: location, period }, {}),
-        sb.select('bev_purchases', { location_id: location, period }, { order: 'date.asc' }),
-        sb.select('bev_issues', { location_id: location, period }, { order: 'date.asc' }),
-        sb.select('bev_suppliers', { location_id: location, active: true }, { order: 'name.asc' }),
+        sb.select('bev_items', { location_id: location, active: true, company_id: companyId }, { order: 'category.asc,name.asc' }),
+        sb.select('bev_stock_periods', { location_id: location, period, company_id: companyId }, {}),
+        sb.select('bev_purchases', { location_id: location, period, company_id: companyId }, { order: 'date.asc' }),
+        sb.select('bev_issues', { location_id: location, period, company_id: companyId }, { order: 'date.asc' }),
+        sb.select('bev_suppliers', { location_id: location, active: true, company_id: companyId }, { order: 'name.asc' }),
       ])
       setItems(itemsRes || [])
       setStockPeriods(spRes || [])
@@ -670,7 +691,7 @@ export default function App() {
   useEffect(() => {
     loadAll()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [location, period])
+  }, [location, period, companyId])
 
   // ---------------------------------------------------------------------------
   // Local (optimistic) state updates. Editing a single field used to call
@@ -795,6 +816,7 @@ export default function App() {
           period,
           opening_units: priorSPByItem[it.id] ? openingUnits : 0,
           opening_cost_per_unit: priorSPByItem[it.id] ? priorMetrics.weightedAvgCost : 0,
+          company_id: companyId,
         }
       })
     if (rows.length) {
@@ -813,8 +835,28 @@ export default function App() {
 
   const allClosed = stockPeriods.length > 0 && stockPeriods.every((sp) => sp.closed)
 
-  if (!role) {
-    return <LoginScreen onLogin={login} />
+  if (companyLoading) {
+    return (
+      <AuthMessageScreen>
+        <p>Loading your company access…</p>
+      </AuthMessageScreen>
+    )
+  }
+
+  if (companyError) {
+    return (
+      <AuthMessageScreen>
+        <p style={{ color: colors.danger }}>{companyError}</p>
+      </AuthMessageScreen>
+    )
+  }
+
+  if (!companyId) {
+    return (
+      <AuthMessageScreen>
+        <p>Your account doesn't have access to any company yet. Contact an administrator.</p>
+      </AuthMessageScreen>
+    )
   }
 
   const TABS = role === 'admin' ? ADMIN_TABS : STAFF_TABS
@@ -854,6 +896,24 @@ export default function App() {
             onChange={(e) => setPeriod(e.target.value)}
             style={styles.monthInput}
           />
+          {availableCompanies.length > 1 && (
+            <select
+              value={companyId}
+              onChange={(e) => switchCompany(e.target.value)}
+              style={{
+                fontSize: 12,
+                padding: '6px 8px',
+                background: colors.bg,
+                color: colors.cream,
+                border: `1px solid ${colors.border}`,
+                borderRadius: 8,
+              }}
+            >
+              {availableCompanies.map((c) => (
+                <option key={c.id} value={c.id}>{c.name}</option>
+              ))}
+            </select>
+          )}
         </div>
       </div>
 
@@ -908,6 +968,7 @@ export default function App() {
                 onAdd={addLocalItem}
                 onUpdate={updateLocalItem}
                 onRemove={removeLocalItem}
+                companyId={companyId}
               />
             )}
             {activeTab === 'suppliers' && role === 'admin' && (
@@ -917,6 +978,7 @@ export default function App() {
                 onAdd={addLocalSupplier}
                 onUpdate={updateLocalSupplier}
                 onRemove={removeLocalSupplier}
+                companyId={companyId}
               />
             )}
             {activeTab === 'opening' && role === 'admin' && (
@@ -927,6 +989,7 @@ export default function App() {
                 location={location}
                 period={period}
                 onSave={upsertLocalStockPeriods}
+                companyId={companyId}
               />
             )}
             {activeTab === 'purchases' && role === 'admin' && (
@@ -938,6 +1001,7 @@ export default function App() {
                 period={period}
                 onAdd={addLocalPurchase}
                 onRemove={removeLocalPurchase}
+                companyId={companyId}
               />
             )}
             {activeTab === 'issues' && (
@@ -948,6 +1012,7 @@ export default function App() {
                 period={period}
                 onAdd={addLocalIssue}
                 onRemove={removeLocalIssue}
+                companyId={companyId}
               />
             )}
             {activeTab === 'count' && (
@@ -960,6 +1025,7 @@ export default function App() {
                 role={role}
                 onSave={upsertLocalStockPeriods}
                 onLinkItem={updateLocalItem}
+                companyId={companyId}
               />
             )}
             {activeTab === 'variance' && role === 'admin' && (
@@ -1249,7 +1315,7 @@ function DashboardTab({ items, metricsByItem, period, suppliers, supplierById })
 // Items tab — manage the beverage master list for the selected lodge
 // ---------------------------------------------------------------------------
 
-function ItemsTab({ items, metricsByItem, location, suppliers, onAdd, onUpdate, onRemove }) {
+function ItemsTab({ items, metricsByItem, location, suppliers, onAdd, onUpdate, onRemove, companyId }) {
   const [form, setForm] = useState({
     name: '',
     category: 'Beer',
@@ -1272,6 +1338,7 @@ function ItemsTab({ items, metricsByItem, location, suppliers, onAdd, onUpdate, 
       order_pack_label: form.order_pack_label.trim() || null,
       supplier_id: form.supplier_id || null,
       location_id: location,
+      company_id: companyId,
     })
     setForm({
       name: '',
@@ -1511,7 +1578,7 @@ function ItemsTab({ items, metricsByItem, location, suppliers, onAdd, onUpdate, 
 // there was previously no way to enter or fix the real starting values.
 // ---------------------------------------------------------------------------
 
-function OpeningTab({ items, stockByItem, metricsByItem, location, period, onSave }) {
+function OpeningTab({ items, stockByItem, metricsByItem, location, period, onSave, companyId }) {
   async function saveOpening(item, field, value) {
     const sp = stockByItem[item.id]
     if (!sp) return
@@ -1528,6 +1595,7 @@ function OpeningTab({ items, stockByItem, metricsByItem, location, period, onSav
         counted_by: sp.counted_by,
         count_date: sp.count_date,
         closed: sp.closed,
+        company_id: companyId,
       },
       'item_id,period'
     )
@@ -1593,14 +1661,14 @@ function OpeningTab({ items, stockByItem, metricsByItem, location, period, onSav
 // to items via bev_items.supplier_id.
 // ---------------------------------------------------------------------------
 
-function SuppliersTab({ suppliers, location, onAdd, onUpdate, onRemove }) {
+function SuppliersTab({ suppliers, location, onAdd, onUpdate, onRemove, companyId }) {
   const [form, setForm] = useState({ name: '', contact_name: '', phone: '', email: '', notes: '' })
   const [saving, setSaving] = useState(false)
 
   async function addSupplier() {
     if (!form.name.trim()) return
     setSaving(true)
-    const [row] = await sb.insert('bev_suppliers', { ...form, location_id: location })
+    const [row] = await sb.insert('bev_suppliers', { ...form, location_id: location, company_id: companyId })
     setForm({ name: '', contact_name: '', phone: '', email: '', notes: '' })
     setSaving(false)
     onAdd(row)
@@ -1727,7 +1795,7 @@ function SuppliersTab({ suppliers, location, onAdd, onUpdate, onRemove }) {
 // proposes a draft.
 // ---------------------------------------------------------------------------
 
-function SlipScanCard({ items, suppliers, location, onApproved }) {
+function SlipScanCard({ items, suppliers, location, onApproved, companyId }) {
   const [scanning, setScanning] = useState(false)
   const [scanError, setScanError] = useState('')
   const [review, setReview] = useState(null) // { date, supplier, rows: [...] }
@@ -1826,6 +1894,7 @@ function SlipScanCard({ items, suppliers, location, onApproved }) {
       units: Number(r.qty),
       total_cost_excl_vat: Number(r.total_cost) || 0,
       supplier: review.supplier || '',
+      company_id: companyId,
     }))
     try {
       const saved = await sb.insert('bev_purchases', payload)
@@ -2036,7 +2105,7 @@ function SlipScanCard({ items, suppliers, location, onApproved }) {
 // Purchases tab
 // ---------------------------------------------------------------------------
 
-function PurchasesTab({ items, purchases, suppliers, location, period, onAdd, onRemove }) {
+function PurchasesTab({ items, purchases, suppliers, location, period, onAdd, onRemove, companyId }) {
   const [form, setForm] = useState({
     item_id: items[0]?.id || '',
     date: new Date().toISOString().slice(0, 10),
@@ -2057,6 +2126,7 @@ function PurchasesTab({ items, purchases, suppliers, location, period, onAdd, on
       units: Number(form.units),
       total_cost_excl_vat: Number(form.total_cost_excl_vat || 0),
       supplier: form.supplier,
+      company_id: companyId,
     })
     setForm({ ...form, units: '', total_cost_excl_vat: '', supplier: '' })
     setSaving(false)
@@ -2072,7 +2142,7 @@ function PurchasesTab({ items, purchases, suppliers, location, period, onAdd, on
 
   return (
     <>
-      <SlipScanCard items={items} suppliers={suppliers} location={location} onApproved={(rows) => rows.forEach(onAdd)} />
+      <SlipScanCard items={items} suppliers={suppliers} location={location} companyId={companyId} onApproved={(rows) => rows.forEach(onAdd)} />
 
       <div style={styles.card}>
         <div style={styles.cardTitle}>Log a purchase manually</div>
@@ -2179,7 +2249,7 @@ function PurchasesTab({ items, purchases, suppliers, location, period, onAdd, on
 // Issues tab — v1: simple daily total per item (no cost-centre breakdown yet)
 // ---------------------------------------------------------------------------
 
-function IssuesTab({ items, issues, location, period, onAdd, onRemove }) {
+function IssuesTab({ items, issues, location, period, onAdd, onRemove, companyId }) {
   const [form, setForm] = useState({
     item_id: items[0]?.id || '',
     date: new Date().toISOString().slice(0, 10),
@@ -2200,6 +2270,7 @@ function IssuesTab({ items, issues, location, period, onAdd, onRemove }) {
       qty: Number(form.qty),
       reason: form.reason,
       note: form.note,
+      company_id: companyId,
     })
     setForm({ ...form, qty: '', note: '' })
     setSaving(false)
@@ -2314,7 +2385,7 @@ function IssuesTab({ items, issues, location, period, onAdd, onRemove }) {
 // Count tab — enter the physical closing stock count
 // ---------------------------------------------------------------------------
 
-function CountTab({ items, stockByItem, metricsByItem, location, period, role, onSave, onLinkItem }) {
+function CountTab({ items, stockByItem, metricsByItem, location, period, role, onSave, onLinkItem, companyId }) {
   const [countedBy, setCountedBy] = useState('')
   const [resetKey, setResetKey] = useState(0)
   const [submitting, setSubmitting] = useState(false)
@@ -2398,6 +2469,7 @@ function CountTab({ items, stockByItem, metricsByItem, location, period, role, o
         closing_count_units: Number(raw),
         counted_by: countedBy || sp.counted_by || null,
         count_date: new Date().toISOString().slice(0, 10),
+        company_id: companyId,
       })
     }
 
