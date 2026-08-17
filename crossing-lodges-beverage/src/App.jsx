@@ -2426,13 +2426,21 @@ function PurchasesTab({ items, purchases, suppliers, location, period, onAdd, on
 
 function IssuesTab({ items, issues, location, period, onAdd, onRemove, companyId }) {
   const [form, setForm] = useState({
-    item_id: items[0]?.id || '',
+    item_id: '',
     date: new Date().toISOString().slice(0, 10),
     qty: '',
     reason: 'Service',
     note: '',
   })
   const [saving, setSaving] = useState(false)
+
+  // Category-then-item picker (2026-08-17) — pick a category (e.g. Liquor)
+  // first, then choose from items within it, matching the pattern used for
+  // materials in the Maintenance app instead of one long flat item list.
+  const [category, setCategory] = useState('')
+  const categories = useMemo(() => [...new Set(items.map((it) => it.category).filter(Boolean))].sort(), [items])
+  const uncategorisedCount = items.filter((it) => !it.category).length
+  const itemsInCat = category ? items.filter((it) => (category === '__none__' ? !it.category : it.category === category)) : []
 
   async function addIssue() {
     if (!form.item_id || !form.qty) return
@@ -2447,7 +2455,8 @@ function IssuesTab({ items, issues, location, period, onAdd, onRemove, companyId
       note: form.note,
       company_id: companyId,
     })
-    setForm({ ...form, qty: '', note: '' })
+    setForm({ ...form, item_id: '', qty: '', note: '' })
+    setCategory('')
     setSaving(false)
     onAdd(row)
   }
@@ -2469,9 +2478,31 @@ function IssuesTab({ items, issues, location, period, onAdd, onRemove, companyId
         </div>
         <div style={styles.formGrid}>
           <div>
+            <label style={styles.label}>Category</label>
+            <select
+              style={styles.input}
+              value={category}
+              onChange={(e) => { setCategory(e.target.value); setForm({ ...form, item_id: '' }) }}
+            >
+              <option value="">Select category…</option>
+              {categories.map((c) => (
+                <option key={c} value={c}>
+                  {c}
+                </option>
+              ))}
+              {uncategorisedCount > 0 && <option value="__none__">Uncategorised</option>}
+            </select>
+          </div>
+          <div>
             <label style={styles.label}>Item</label>
-            <select style={styles.input} value={form.item_id} onChange={(e) => setForm({ ...form, item_id: e.target.value })}>
-              {items.map((it) => (
+            <select
+              style={styles.input}
+              value={form.item_id}
+              onChange={(e) => setForm({ ...form, item_id: e.target.value })}
+              disabled={!category}
+            >
+              <option value="">{category ? 'Select item…' : 'Pick a category first'}</option>
+              {itemsInCat.map((it) => (
                 <option key={it.id} value={it.id}>
                   {it.name}
                 </option>
