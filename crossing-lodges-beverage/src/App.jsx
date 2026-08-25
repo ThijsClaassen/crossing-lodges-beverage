@@ -636,7 +636,6 @@ const ADMIN_TABS = [
   { id: 'suppliers', label: 'Suppliers' },
   { id: 'opening', label: 'Opening' },
   { id: 'purchases', label: 'Purchases' },
-  { id: 'credits', label: 'Credit Notes' },
   { id: 'issues', label: 'Issues' },
   { id: 'count', label: 'Count' },
   { id: 'variance', label: 'Variance' },
@@ -1144,23 +1143,12 @@ function AuthenticatedApp() {
                 companyId={companyId}
                 slips={slips}
                 onSlipAttached={onSlipAttached}
-              />
-            )}
-            {activeTab === 'credits' && role === 'admin' && (
-              <CreditNotesTab
-                items={items}
-                suppliers={suppliers}
                 creditNotes={creditNotes}
                 metricsByItem={metricsByItem}
-                location={location}
-                companyId={companyId}
-                period={period}
-                onAdd={addLocalCreditNote}
-                onRemove={removeLocalCreditNote}
+                onAddCredit={addLocalCreditNote}
+                onRemoveCredit={removeLocalCreditNote}
                 onIssueAdd={addLocalIssue}
                 onIssueRemove={removeLocalIssue}
-                slips={slips}
-                onSlipAttached={onSlipAttached}
               />
             )}
             {activeTab === 'issues' && (
@@ -2702,9 +2690,14 @@ function MemberPurchaseCard({ companyId, location, refreshSignal }) {
   )
 }
 
-function PurchasesTab({ items, purchases, suppliers, location, period, onAdd, onUpdate, onRemove, companyId, slips, onSlipAttached }) {
+function PurchasesTab({ items, purchases, suppliers, location, period, onAdd, onUpdate, onRemove, companyId, slips, onSlipAttached, creditNotes, metricsByItem, onAddCredit, onRemoveCredit, onIssueAdd, onIssueRemove }) {
   const { memberBillingEnabled } = useCompany()
   const [memberPendingRefresh, setMemberPendingRefresh] = useState(0)
+  // Credit Notes (2026-08-25) — lives inside Purchases as a toggle rather
+  // than its own nav tab: it's the same "wrong thing was bought" moment as
+  // a purchase, just the reverse direction, so it belongs next to the
+  // purchase form instead of forcing a tab switch to find it.
+  const [showCredits, setShowCredits] = useState(false)
   const [form, setForm] = useState({
     item_id: items[0]?.id || '',
     date: new Date().toISOString().slice(0, 10),
@@ -2774,6 +2767,29 @@ function PurchasesTab({ items, purchases, suppliers, location, period, onAdd, on
 
       {memberBillingEnabled && (
         <MemberPurchaseCard companyId={companyId} location={location} refreshSignal={memberPendingRefresh} />
+      )}
+
+      <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 10 }}>
+        <button style={styles.buttonGhost} onClick={() => setShowCredits((s) => !s)}>
+          {showCredits ? 'Hide Credit Notes' : '+ Credit Note'}
+        </button>
+      </div>
+      {showCredits && (
+        <CreditNotesTab
+          items={items}
+          suppliers={suppliers}
+          creditNotes={creditNotes}
+          metricsByItem={metricsByItem}
+          location={location}
+          companyId={companyId}
+          period={period}
+          onAdd={onAddCredit}
+          onRemove={onRemoveCredit}
+          onIssueAdd={onIssueAdd}
+          onIssueRemove={onIssueRemove}
+          slips={slips}
+          onSlipAttached={onSlipAttached}
+        />
       )}
 
       <div style={styles.card}>
