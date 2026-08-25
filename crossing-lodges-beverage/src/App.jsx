@@ -7,7 +7,14 @@ import Login from './Login.jsx'
 import SetPassword from './SetPassword.jsx'
 import { CompanyProvider, useCompany } from './CompanyContext.jsx'
 import { uploadPurchaseSlip, getSlipUrl } from './slipUpload.js'
-import { listMembers as listBillingMembers, logMemberPurchase } from './memberPurchase.js'
+import {
+  listMembers as listBillingMembers,
+  logMemberPurchase,
+  listPendingCharges,
+  addPendingCharges,
+  billPendingCharges,
+  deletePendingCharge,
+} from './memberPurchase.js'
 
 // ---------------------------------------------------------------------------
 // Auth helpers — real Supabase Auth replaces the old shared staff/admin
@@ -150,6 +157,16 @@ function findBestMatch(text, candidates, nameKey = 'name') {
 
 function round2(n) {
   return Math.round((Number(n) || 0) * 100) / 100
+}
+
+// Member purchases are never VAT-stripped — the VAT-INCLUSIVE amount as
+// printed on the slip is what gets forwarded to the member's account,
+// unlike total_cost_excl_vat which this app strips VAT from for its own
+// costing. If the slip's prices already exclude VAT, gross raw_total back
+// up so the member is always billed the inclusive figure either way.
+function vatInclusiveAmount(row, pricesIncludeVat, vatRate) {
+  const multiplier = pricesIncludeVat ? 1 : 1 + (Number(vatRate) || 0) / 100
+  return round2(row.raw_total * multiplier)
 }
 
 // Slips get read exactly as printed (see the prompt in api/parse-slip.js) —
@@ -1897,7 +1914,7 @@ function SuppliersTab({ suppliers, location, onAdd, onUpdate, onRemove, companyI
 // proposes a draft.
 // ---------------------------------------------------------------------------
 
-function SlipScanCard({ items, suppliers, location, onApproved, companyId, onSlipAttached }) {
+function SlipScanCard({ items, suppliers, location, onApproved, companyId, onSlipAttached, memberBillingEnabled, onMemberPending }) {
   const [scanning, setScanning] = useState(false)
   const [scanError, setScanError] = useState('')
   const [review, setReview] = useState(null) // { date, supplier, rows: [...] }
@@ -1944,6 +1961,7 @@ function SlipScanCard({ items, suppliers, location, onApproved, companyId, onSli
           raw_total: rawTotal,
           total_cost: rawTotal,
           skip: false,
+          billToMember: false,
         }
       })
 
@@ -1982,9 +2000,10 @@ function SlipScanCard({ items, suppliers, location, onApproved, companyId, onSli
   }
 
   async function approve() {
-    const toSave = review.rows.filter((r) => !r.skip && r.item_id && Number(r.qty) > 0)
-    if (toSave.length === 0) {
-      setSaveStatus('Nothing to save — pick an item for at least one line, or cancel.')
+    const toSave = review.rows.filter((r) => !r.skip && !r.billToMember && r.item_id && Number(r.qty) > 0)
+    const toMember = review.rows.filter((r) => !r.skip && r.billToMember)
+    if (toSave.length === 0 && toMember.length === 0) {
+      setSaveStatus('Nothing to save — pick an item (or tick Bill to Member) for at least one line, or cancel.')
       return
     }
     setSaving(true)
@@ -2000,21 +2019,41 @@ function SlipScanCard({ items, suppliers, location, onApproved, companyId, onSli
         dateGuess: review.date,
         slipTotalGuess: review.slipTotal,
       })
-      const payload = toSave.map((r) => ({
-        item_id: r.item_id,
-        location_id: location,
-        period: toPeriod(review.date),
-        date: review.date,
-        units: Number(r.qty),
-        total_cost_excl_vat: Number(r.total_cost) || 0,
-        supplier: review.supplier || '',
-        company_id: companyId,
-        slip_id: slip.id,
-      }))
-      const saved = await sb.insert('bev_purchases', payload)
-      onApproved(saved || [])
+      let saved = []
+      if (toSave.length) {
+        const payload = toSave.map((r) => ({
+          item_id: r.item_id,
+          location_id: location,
+          period: toPeriod(review.date),
+          date: review.date,
+          units: Number(r.qty),
+          total_cost_excl_vat: Number(r.total_cost) || 0,
+          supplier: review.supplier || '',
+          company_id: companyId,
+          slip_id: slip.id,
+        }))
+        saved = await sb.insert('bev_purchases', payload)
+        onApproved(saved || [])
+      }
+      if (toMember.length) {
+        await addPendingCharges({
+          companyId,
+          locationId: location,
+          slipId: slip.id,
+          rows: toMember.map((r) => ({
+            chargeDate: review.date,
+            description: r.guessName || r.raw_text,
+            qty: Number(r.qty) || null,
+            amount: vatInclusiveAmount(r, review.pricesIncludeVat, review.vatRate),
+          })),
+        })
+        onMemberPending?.()
+      }
       onSlipAttached(slip)
-      setSaveStatus(`Saved ${saved?.length || toSave.length} purchase${(saved?.length || toSave.length) === 1 ? '' : 's'} and attached the slip photo.`)
+      const parts = []
+      if (saved.length || toSave.length) parts.push(`${saved?.length || toSave.length} purchase${(saved?.length || toSave.length) === 1 ? '' : 's'}`)
+      if (toMember.length) parts.push(`${toMember.length} line${toMember.length === 1 ? '' : 's'} sent to Member Purchase`)
+      setSaveStatus(`Saved ${parts.join(' and ')} and attached the slip photo.`)
       setReview(null)
     } catch (err) {
       setSaveStatus(`Could not save: ${err.message}`)
@@ -2107,6 +2146,14 @@ function SlipScanCard({ items, suppliers, location, onApproved, companyId, onSli
             VAT-stripped figure that gets saved; change "Slip prices" or the VAT rate above if it doesn't look
             right, and every row recalculates. Editing a row's total cost by hand overrides that row only, until
             the VAT settings change again.
+            {memberBillingEnabled && (
+              <>
+                {' '}A line bought on a member's behalf (not our stock) can be ticked{' '}
+                <strong>Bill to Member</strong> instead — it skips this app's stock entirely and lands in the
+                Member Purchase list below to be billed to whoever it's for, at the full VAT-inclusive amount as
+                printed on the slip.
+              </>
+            )}
             {review.slipTotal != null && (
               <>
                 {' '}Slip total as printed: R {fmt(review.slipTotal)}.
@@ -2123,11 +2170,12 @@ function SlipScanCard({ items, suppliers, location, onApproved, companyId, onSli
                   <th style={styles.th}>Qty</th>
                   <th style={styles.th}>Total cost (excl. VAT)</th>
                   <th style={styles.th}>Skip</th>
+                  {memberBillingEnabled && <th style={styles.th}>Bill to Member</th>}
                 </tr>
               </thead>
               <tbody>
                 {review.rows.map((row) => (
-                  <tr key={row.key} style={row.skip ? { opacity: 0.45 } : undefined}>
+                  <tr key={row.key} style={row.skip ? { opacity: 0.45 } : row.billToMember ? { background: 'rgba(184,147,90,.10)' } : undefined}>
                     <td style={styles.td}>
                       {row.raw_text}
                       <div>
@@ -2180,11 +2228,20 @@ function SlipScanCard({ items, suppliers, location, onApproved, companyId, onSli
                         onChange={(e) => updateRow(row.key, { skip: e.target.checked })}
                       />
                     </td>
+                    {memberBillingEnabled && (
+                      <td style={styles.td}>
+                        <input
+                          type="checkbox"
+                          checked={row.billToMember}
+                          onChange={(e) => updateRow(row.key, { billToMember: e.target.checked, skip: e.target.checked ? false : row.skip })}
+                        />
+                      </td>
+                    )}
                   </tr>
                 ))}
                 {review.rows.length === 0 && (
                   <tr>
-                    <td style={styles.td} colSpan={5}>
+                    <td style={styles.td} colSpan={memberBillingEnabled ? 6 : 5}>
                       Nothing readable was found on that photo — try again with better lighting, or log purchases
                       manually below.
                     </td>
@@ -2195,8 +2252,22 @@ function SlipScanCard({ items, suppliers, location, onApproved, companyId, onSli
           </div>
 
           <div style={{ fontSize: 12, color: colors.muted, marginTop: 6 }}>
-            Sum of approved lines (excl. VAT): R{' '}
-            {fmt(review.rows.filter((r) => !r.skip && r.item_id).reduce((s, r) => s + Number(r.total_cost || 0), 0))}
+            Sum of approved stock lines (excl. VAT): R{' '}
+            {fmt(
+              review.rows
+                .filter((r) => !r.skip && !r.billToMember && r.item_id)
+                .reduce((s, r) => s + Number(r.total_cost || 0), 0)
+            )}
+            {memberBillingEnabled && review.rows.some((r) => r.billToMember) && (
+              <>
+                {' '}· Bill to Member (incl. VAT): R{' '}
+                {fmt(
+                  review.rows
+                    .filter((r) => r.billToMember)
+                    .reduce((s, r) => s + vatInclusiveAmount(r, review.pricesIncludeVat, review.vatRate), 0)
+                )}
+              </>
+            )}
           </div>
 
           <div style={{ ...styles.row, justifyContent: 'space-between', marginTop: 12, flexWrap: 'wrap' }}>
@@ -2276,21 +2347,93 @@ function ViewSlipLink({ storagePath }) {
 // Quick-log a purchase straight to a member's account instead of this
 // app's own stock — see memberPurchase.js. Only rendered when
 // memberBillingEnabled is true for the current company (Demo only today).
-function MemberPurchaseCard({ companyId, location }) {
+function MemberPurchaseCard({ companyId, location, refreshSignal }) {
   const [members, setMembers] = useState([])
   const [form, setForm] = useState({ member_id: '', date: new Date().toISOString().slice(0, 10), description: '', amount: '' })
   const [saving, setSaving] = useState(false)
   const [message, setMessage] = useState('')
+
+  // Pending queue — lines ticked "Bill to Member" during a slip scan land
+  // here first (see SlipScanCard/memberPurchase.js) instead of billing
+  // immediately, so nothing gets forgotten and a slip mixing stock + member
+  // items can still be scanned in one go.
+  const [pending, setPending] = useState([])
+  const [pendingLoading, setPendingLoading] = useState(false)
+  const [selected, setSelected] = useState(() => new Set())
+  const [billMemberId, setBillMemberId] = useState('')
+  const [billing, setBilling] = useState(false)
+  const [billMessage, setBillMessage] = useState('')
+
+  function loadPending() {
+    setPendingLoading(true)
+    listPendingCharges({ companyId })
+      .then((rows) => setPending(rows))
+      .catch(() => setPending([]))
+      .finally(() => setPendingLoading(false))
+  }
 
   useEffect(() => {
     listBillingMembers({ companyId })
       .then((m) => {
         setMembers(m)
         setForm((f) => ({ ...f, member_id: f.member_id || m[0]?.id || '' }))
+        setBillMemberId((id) => id || m[0]?.id || '')
       })
       .catch(() => setMembers([]))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [companyId])
+
+  useEffect(() => {
+    loadPending()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [companyId, refreshSignal])
+
+  function toggleSelected(id) {
+    setSelected((s) => {
+      const next = new Set(s)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  function toggleSelectAll() {
+    setSelected((s) => (s.size === pending.length ? new Set() : new Set(pending.map((p) => p.id))))
+  }
+
+  async function billSelected() {
+    setBillMessage('')
+    if (!billMemberId || selected.size === 0) {
+      setBillMessage('Pick a member and tick at least one line.')
+      return
+    }
+    setBilling(true)
+    try {
+      await billPendingCharges({
+        companyId,
+        memberId: billMemberId,
+        locationId: location,
+        pendingIds: Array.from(selected),
+      })
+      setSelected(new Set())
+      setBillMessage('Billed to their member account.')
+      loadPending()
+    } catch (err) {
+      setBillMessage(err.message || 'Could not bill those lines.')
+    } finally {
+      setBilling(false)
+    }
+  }
+
+  async function removePending(id) {
+    if (!window.confirm('Remove this line without billing it to anyone?')) return
+    try {
+      await deletePendingCharge({ id })
+      loadPending()
+    } catch (err) {
+      alert('Could not remove that line: ' + err.message)
+    }
+  }
 
   async function handleSubmit() {
     setMessage('')
@@ -2325,6 +2468,56 @@ function MemberPurchaseCard({ companyId, location }) {
       <div style={{ fontSize: 12, color: colors.muted, marginBottom: 10 }}>
         Bought on a member's behalf (e.g. groceries) — goes straight to their account, not this app's stock.
       </div>
+
+      {(pendingLoading || pending.length > 0) && (
+        <div style={{ marginBottom: 16, paddingBottom: 14, borderBottom: `1px solid ${colors.border || '#333'}` }}>
+          <div style={{ ...styles.row, justifyContent: 'space-between', marginBottom: 6 }}>
+            <div style={{ fontSize: 13, fontWeight: 600 }}>Pending — tick lines to bill</div>
+            {pending.length > 0 && (
+              <button style={styles.buttonGhost} onClick={toggleSelectAll} type="button">
+                {selected.size === pending.length ? 'Clear all' : 'Select all'}
+              </button>
+            )}
+          </div>
+          <div style={{ fontSize: 12, color: colors.muted, marginBottom: 8 }}>
+            Lines ticked "Bill to Member" when scanning a slip land here first — nothing bills until you tick
+            them below and pick who to bill.
+          </div>
+          {pendingLoading && pending.length === 0 && <div style={{ fontSize: 12, color: colors.muted }}>Loading…</div>}
+          {pending.map((p) => (
+            <div
+              key={p.id}
+              style={{ ...styles.row, justifyContent: 'space-between', padding: '6px 0', borderTop: `1px solid ${colors.border || '#333'}` }}
+            >
+              <label style={{ ...styles.row, gap: 8, cursor: 'pointer', flex: 1 }}>
+                <input type="checkbox" checked={selected.has(p.id)} onChange={() => toggleSelected(p.id)} />
+                <span style={{ fontSize: 13 }}>
+                  {p.description}
+                  {p.qty ? ` × ${p.qty}` : ''} — R {fmt(p.amount)}
+                  <span style={{ color: colors.muted, fontSize: 11 }}> ({p.charge_date})</span>
+                </span>
+              </label>
+              <button style={styles.buttonGhost} onClick={() => removePending(p.id)} type="button">
+                Remove
+              </button>
+            </div>
+          ))}
+          <div style={{ ...styles.row, gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
+            <select style={styles.input} value={billMemberId} onChange={(e) => setBillMemberId(e.target.value)}>
+              {members.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.name}
+                </option>
+              ))}
+            </select>
+            <button style={styles.button} onClick={billSelected} disabled={billing || selected.size === 0} type="button">
+              {billing ? 'Billing…' : `Bill ${selected.size || ''} selected to member`}
+            </button>
+          </div>
+          {billMessage && <div style={{ fontSize: 12, marginTop: 6 }}>{billMessage}</div>}
+        </div>
+      )}
+
       <div style={styles.formGrid}>
         <div>
           <label style={styles.label}>Member</label>
@@ -2365,6 +2558,7 @@ function MemberPurchaseCard({ companyId, location }) {
 
 function PurchasesTab({ items, purchases, suppliers, location, period, onAdd, onUpdate, onRemove, companyId, slips, onSlipAttached }) {
   const { memberBillingEnabled } = useCompany()
+  const [memberPendingRefresh, setMemberPendingRefresh] = useState(0)
   const [form, setForm] = useState({
     item_id: items[0]?.id || '',
     date: new Date().toISOString().slice(0, 10),
@@ -2428,9 +2622,13 @@ function PurchasesTab({ items, purchases, suppliers, location, period, onAdd, on
         companyId={companyId}
         onApproved={(rows) => rows.forEach(onAdd)}
         onSlipAttached={onSlipAttached}
+        memberBillingEnabled={memberBillingEnabled}
+        onMemberPending={() => setMemberPendingRefresh((n) => n + 1)}
       />
 
-      {memberBillingEnabled && <MemberPurchaseCard companyId={companyId} location={location} />}
+      {memberBillingEnabled && (
+        <MemberPurchaseCard companyId={companyId} location={location} refreshSignal={memberPendingRefresh} />
+      )}
 
       <div style={styles.card}>
         <div style={styles.cardTitle}>Log a purchase manually</div>
