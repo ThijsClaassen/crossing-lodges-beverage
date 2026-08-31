@@ -767,7 +767,7 @@ function AuthenticatedApp() {
     setLoading(true)
     setError(null)
     try {
-      const [itemsRes, spRes, purRes, issRes, supRes, cnRes, slipRes] = await Promise.all([
+      const [itemsRes, spRes, purRes, issRes, supRes, cnRes, txRes, slipRes] = await Promise.all([
         sb.select('bev_items', { location_id: location, active: true, company_id: companyId }, { order: 'category.asc,name.asc' }),
         sb.select('bev_stock_periods', { location_id: location, period, company_id: companyId }, {}),
         sb.select('bev_purchases', { location_id: location, period, company_id: companyId }, { order: 'date.asc' }),
