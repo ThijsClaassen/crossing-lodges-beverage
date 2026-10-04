@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, Fragment, useLayoutEffect } from 'react'
+import { useBackToHome } from './backButton.js'
 import { sb, LOCATIONS, currentPeriod } from './sb.js'
 import { prepareSlipImages, readSlipParts } from './slipTiles.js'
 import { colors, fonts, css } from './theme.js'
@@ -990,6 +991,11 @@ function AuthenticatedApp() {
   }
 
   const allClosed = stockPeriods.length > 0 && stockPeriods.every((sp) => sp.closed)
+
+  // Android back button → this role's first page (#555). Worked out here,
+  // before the early returns, the same way activeTab is below.
+  const backTabs = role === 'admin' ? ADMIN_TABS : STAFF_TABS
+  useBackToHome({ page: backTabs.some((t) => t.id === tab) ? tab : backTabs[0]?.id, setPage: setTab, home: backTabs[0]?.id })
 
   if (companyLoading) {
     return (
