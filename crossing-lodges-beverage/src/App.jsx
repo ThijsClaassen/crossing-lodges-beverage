@@ -24,6 +24,7 @@ import {
 } from './memberPurchase.js'
 import { wholeLine, validateSplits, planWrites, proRata } from './splitLines.js'
 import { isoDate, todayIso } from './dates.js'
+import { newestFirst } from './newestFirst.js'
 
 // ---------------------------------------------------------------------------
 // Auth helpers — real Supabase Auth replaces the old shared staff/admin
@@ -3400,7 +3401,7 @@ function MemberPurchaseCard({ companyId, location, refreshSignal }) {
             them below and pick who to bill.
           </div>
           {pendingLoading && pending.length === 0 && <div style={{ fontSize: 12, color: colors.muted }}>Loading…</div>}
-          {pending.map((p) => (
+          {newestFirst(pending, 'charge_date').map((p) => (
             <div
               key={p.id}
               style={{ ...styles.row, justifyContent: 'space-between', padding: '6px 0', borderTop: `1px solid ${colors.border || '#333'}` }}
@@ -3679,7 +3680,8 @@ function PurchaseList({ purchases, period, slips, search, setSearch, supFilter, 
   const supplierNames = [...new Set(purchases.map((p) => p.supplier).filter(Boolean))].sort()
   const noSlip = purchases.filter((p) => !(p.slip_id && slips?.[p.slip_id])).length
   const q = search.trim().toLowerCase()
-  const rows = purchases
+  // Newest first by the purchase's own date (#565).
+  const rows = newestFirst(purchases)
     .filter((p) => !q || `${itemName(p.item_id)} ${p.supplier || ''}`.toLowerCase().includes(q))
     .filter((p) => !supFilter || p.supplier === supFilter)
     .filter((p) => !noSlipOnly || !(p.slip_id && slips?.[p.slip_id]))
@@ -3808,7 +3810,8 @@ function IssuesTab({ items, issues, location, period, onAdd, onRemove, companyId
 
   const writeOffs = issues.filter((i) => i.reason && i.reason !== 'Service')
   const q = search.trim().toLowerCase()
-  const rows = issues
+  // Newest first by the issue's own date (#565).
+  const rows = newestFirst(issues)
     .filter((i) => !q || `${itemName(i.item_id)} ${i.note || ''}`.toLowerCase().includes(q))
     .filter((i) => !reasonFilter || (reasonFilter === '__writeoff__' ? i.reason && i.reason !== 'Service' : (i.reason || 'Service') === reasonFilter))
 
@@ -4083,7 +4086,7 @@ function CreditNotesTab({ items, suppliers, creditNotes, metricsByItem, location
                   </tr>
                 </thead>
                 <tbody>
-                  {creditNotes.map((c) => (
+                  {newestFirst(creditNotes).map((c) => (
                     <tr key={c.id}>
                       <td style={styles.td}>{c.date}</td>
                       <td style={{ ...styles.td, whiteSpace: 'normal' }}>
